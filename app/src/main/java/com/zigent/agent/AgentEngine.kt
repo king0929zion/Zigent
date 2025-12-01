@@ -7,6 +7,7 @@ import com.zigent.ai.AiSettings
 import com.zigent.utils.Logger
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
+import kotlin.coroutines.coroutineContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -140,7 +141,7 @@ class AgentEngine @Inject constructor(
             
             while (stepCount < AiConfig.MAX_AGENT_STEPS) {
                 // 检查是否被取消
-                if (!kotlinx.coroutines.isActive) {
+                if (!coroutineContext.isActive) {
                     Logger.i("Task cancelled", TAG)
                     break
                 }
