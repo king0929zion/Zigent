@@ -12,6 +12,7 @@ import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.zigent.utils.Logger
 import kotlinx.coroutines.*
+import kotlin.coroutines.coroutineContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -286,7 +287,7 @@ class XunfeiSpeechRecognizer(private val context: Context) {
         val buffer = ByteArray(XunfeiConfig.FRAME_SIZE)
         var status = STATUS_FIRST_FRAME
         
-        while (isActive && audioRecord?.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
+        while (coroutineContext.isActive && audioRecord?.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
             val readSize = audioRecord?.read(buffer, 0, buffer.size) ?: -1
             
             if (readSize > 0) {

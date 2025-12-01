@@ -276,8 +276,8 @@ class VoiceManager @Inject constructor(
         }
         
         // 如果正在识别，先取消
-        if (recognizer.isListening) {
-            recognizer.cancel()
+        if (isListening()) {
+            cancelListening()
         }
         
         _state.value = VoiceInteractionState.SPEAKING
