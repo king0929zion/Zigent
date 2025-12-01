@@ -87,8 +87,10 @@ class FloatingInteractionController(
             override fun onStateChanged(state: AgentState) {
                 val phase = when (state) {
                     AgentState.IDLE -> InteractionPhase.IDLE
+                    AgentState.ANALYZING -> InteractionPhase.AI_PROCESSING
                     AgentState.PLANNING -> InteractionPhase.AI_PROCESSING
                     AgentState.EXECUTING -> InteractionPhase.TASK_EXECUTING
+                    AgentState.WAITING_USER -> InteractionPhase.AI_PROCESSING
                     AgentState.PAUSED -> InteractionPhase.TASK_EXECUTING
                     AgentState.COMPLETED -> InteractionPhase.COMPLETED
                     AgentState.FAILED -> InteractionPhase.ERROR
@@ -116,6 +118,15 @@ class FloatingInteractionController(
 
             override fun onTaskFailed(error: String) {
                 failTask(error)
+            }
+            
+            override fun onAskUser(question: String) {
+                // 当AI需要询问用户时，通过TTS朗读问题
+                Logger.i("AI asking user: $question", TAG)
+                callback?.onTaskProgress("AI询问: $question")
+                voiceManager.speak(question) {
+                    // 朗读完成后可以开始新的语音输入
+                }
             }
         }
     }

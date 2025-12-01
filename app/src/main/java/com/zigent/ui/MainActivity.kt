@@ -154,14 +154,13 @@ class MainActivity : ComponentActivity() {
                             FloatingService.instance?.getInteractionController()?.configureAi(newSettings)
                         }
                     },
-                    onTestConnection = { settings, callback ->
+                    onTestConnection = {
                         lifecycleScope.launch {
                             try {
-                                agentEngine.configureAi(settings)
-                                val success = agentEngine.testAiConnection()
-                                callback(success, if (success) "连接成功" else "连接失败")
+                                agentEngine.configureAi(currentAiSettings)
+                                agentEngine.testAiConnection()
                             } catch (e: Exception) {
-                                callback(false, "测试失败: ${e.message}")
+                                // 忽略错误
                             }
                         }
                     },
@@ -658,7 +657,7 @@ private fun UsageGuide() {
             Spacer(modifier = Modifier.height(12.dp))
             
             GuideStep(number = "1", text = "授予必要权限并配置 AI")
-            GuideStep(number = "2", text = "点击"启动服务"显示悬浮球")
+            GuideStep(number = "2", text = "点击【启动服务】显示悬浮球")
             GuideStep(number = "3", text = "点击悬浮球开始语音输入")
             GuideStep(number = "4", text = "说完后再次点击悬浮球")
             GuideStep(number = "5", text = "AI 将自动执行您的指令")
