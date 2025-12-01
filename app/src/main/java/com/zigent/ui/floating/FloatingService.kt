@@ -164,6 +164,10 @@ class FloatingService : Service() {
                 if (aiSettings.apiKey.isNotBlank()) {
                     agentEngine.configureAi(aiSettings)
                     interactionController?.configureAi(aiSettings)
+                    
+                    // 配置语音识别器使用相同的API Key（硅基流动）
+                    voiceManager.configureSiliconFlow(aiSettings.apiKey)
+                    
                     Logger.i("AI settings loaded: ${aiSettings.provider}", TAG)
                 } else {
                     Logger.w("No API key configured", TAG)

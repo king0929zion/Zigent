@@ -2,6 +2,9 @@ package com.zigent.voice
 
 import android.content.Context
 import com.zigent.utils.Logger
+import com.zigent.voice.siliconflow.SiliconFlowRecognitionCallback
+import com.zigent.voice.siliconflow.SiliconFlowRecognitionState
+import com.zigent.voice.siliconflow.SiliconFlowSpeechRecognizer
 import com.zigent.voice.xunfei.XunfeiConfig
 import com.zigent.voice.xunfei.XunfeiRecognitionCallback
 import com.zigent.voice.xunfei.XunfeiRecognitionState
@@ -30,7 +33,8 @@ enum class VoiceInteractionState {
 data class VoiceInteractionResult(
     val success: Boolean,
     val text: String = "",
-    val errorMessage: String = ""
+    val errorMessage: String = "",
+    val isPartial: Boolean = false
 )
 
 /**
@@ -38,7 +42,8 @@ data class VoiceInteractionResult(
  */
 enum class SpeechRecognizerType {
     ANDROID_NATIVE, // Android原生
-    XUNFEI          // 讯飞
+    XUNFEI,         // 讯飞
+    SILICONFLOW     // 硅基流动
 }
 
 /**
@@ -53,14 +58,20 @@ class VoiceManager @Inject constructor(
         private const val TAG = "VoiceManager"
     }
 
-    // 语音识别服务类型（默认使用Android系统STT）
-    var recognizerType: SpeechRecognizerType = SpeechRecognizerType.ANDROID_NATIVE
+    // 语音识别服务类型（默认使用硅基流动）
+    var recognizerType: SpeechRecognizerType = SpeechRecognizerType.SILICONFLOW
+    
+    // 硅基流动 API Key (从 AI 设置中获取)
+    private var siliconFlowApiKey: String = ""
     
     // Android原生语音识别器
     private val nativeRecognizer = VoiceRecognizer(context)
     
     // 讯飞语音识别器
     private val xunfeiRecognizer = XunfeiSpeechRecognizer(context)
+    
+    // 硅基流动语音识别器
+    private val siliconFlowRecognizer = SiliconFlowSpeechRecognizer(context)
     
     // 语音合成器
     private val tts = TextToSpeechManager(context)
@@ -73,11 +84,24 @@ class VoiceManager @Inject constructor(
     private val _lastRecognizedText = MutableStateFlow("")
     val lastRecognizedText: StateFlow<String> = _lastRecognizedText.asStateFlow()
     
+    // 录音时长
+    private val _recordingDuration = MutableStateFlow(0)
+    val recordingDuration: StateFlow<Int> = _recordingDuration.asStateFlow()
+    
     // 识别结果回调
     var onRecognitionResult: ((VoiceInteractionResult) -> Unit)? = null
     
     // 是否已初始化
     private var isInitialized = false
+
+    /**
+     * 配置硅基流动 API Key
+     */
+    fun configureSiliconFlow(apiKey: String) {
+        Logger.i("Configuring SiliconFlow API Key: ${apiKey.take(10)}...", TAG)
+        siliconFlowApiKey = apiKey
+        siliconFlowRecognizer.apiKey = apiKey
+    }
 
     /**
      * 初始化语音服务
@@ -91,11 +115,15 @@ class VoiceManager @Inject constructor(
         
         Logger.i("Initializing VoiceManager with $recognizerType", TAG)
         
-        // 初始化语音识别 - 总是设置回调
+        // 初始化所有识别器的回调
+        siliconFlowRecognizer.callback = createSiliconFlowCallback()
         xunfeiRecognizer.callback = createXunfeiRecognitionCallback()
         nativeRecognizer.callback = createRecognitionCallback()
         
         when (recognizerType) {
+            SpeechRecognizerType.SILICONFLOW -> {
+                Logger.i("SiliconFlow recognizer configured", TAG)
+            }
             SpeechRecognizerType.XUNFEI -> {
                 Logger.i("Xunfei recognizer configured", TAG)
             }
@@ -105,7 +133,7 @@ class VoiceManager @Inject constructor(
             }
         }
         
-        // 初始化TTS - 即使TTS失败，语音识别也应该可以工作
+        // 初始化TTS
         tts.initialize { success ->
             if (success) {
                 tts.callback = createTtsCallback()
@@ -113,10 +141,46 @@ class VoiceManager @Inject constructor(
             } else {
                 Logger.w("TTS initialization failed, but recognition should still work", TAG)
             }
-            // 无论TTS是否成功，都标记为已初始化
             isInitialized = true
             Logger.i("VoiceManager initialized (TTS: $success)", TAG)
             onComplete?.invoke(true)
+        }
+    }
+
+    /**
+     * 创建硅基流动语音识别回调
+     */
+    private fun createSiliconFlowCallback(): SiliconFlowRecognitionCallback {
+        return object : SiliconFlowRecognitionCallback {
+            override fun onStateChanged(state: SiliconFlowRecognitionState) {
+                val newState = when (state) {
+                    SiliconFlowRecognitionState.IDLE -> VoiceInteractionState.IDLE
+                    SiliconFlowRecognitionState.RECORDING -> VoiceInteractionState.LISTENING
+                    SiliconFlowRecognitionState.UPLOADING -> VoiceInteractionState.RECOGNIZING
+                    SiliconFlowRecognitionState.SUCCESS -> VoiceInteractionState.IDLE
+                    SiliconFlowRecognitionState.ERROR -> VoiceInteractionState.ERROR
+                }
+                Logger.d("SiliconFlow state: $state -> $newState", TAG)
+                _state.value = newState
+            }
+
+            override fun onResult(text: String) {
+                Logger.i("=== SiliconFlow result: '$text' ===", TAG)
+                _lastRecognizedText.value = text
+                _state.value = VoiceInteractionState.IDLE
+                onRecognitionResult?.invoke(VoiceInteractionResult(true, text))
+            }
+
+            override fun onError(message: String) {
+                Logger.e("SiliconFlow error: $message", null, TAG)
+                _state.value = VoiceInteractionState.ERROR
+                onRecognitionResult?.invoke(VoiceInteractionResult(false, errorMessage = message))
+                _state.value = VoiceInteractionState.IDLE
+            }
+
+            override fun onRecordingProgress(seconds: Int) {
+                _recordingDuration.value = seconds
+            }
         }
     }
     
@@ -129,22 +193,18 @@ class VoiceManager @Inject constructor(
                 Logger.d("Xunfei final result: $text, isLast: $isLast", TAG)
                 _lastRecognizedText.value = text
                 _state.value = VoiceInteractionState.IDLE
-                // 最终结果，通知回调
                 onRecognitionResult?.invoke(VoiceInteractionResult(true, text))
             }
 
             override fun onPartialResult(text: String) {
                 Logger.d("Xunfei partial result: $text", TAG)
                 _lastRecognizedText.value = text
-                // 部分结果也通知回调，让UI实时更新
-                onRecognitionResult?.invoke(VoiceInteractionResult(true, text))
+                onRecognitionResult?.invoke(VoiceInteractionResult(true, text, isPartial = true))
             }
 
             override fun onError(errorCode: Int, errorMessage: String) {
                 Logger.e("Xunfei error: $errorMessage", null, TAG)
                 _state.value = VoiceInteractionState.ERROR
-                // 不立即通知错误，让用户可以继续尝试
-                // onRecognitionResult?.invoke(VoiceInteractionResult(false, errorMessage = errorMessage))
                 _state.value = VoiceInteractionState.IDLE
             }
 
@@ -178,19 +238,14 @@ class VoiceManager @Inject constructor(
             override fun onPartialResult(text: String) {
                 Logger.i("Native partial result: '$text'", TAG)
                 _lastRecognizedText.value = text
-                // 部分结果也通知回调，让UI实时更新
                 if (text.isNotBlank()) {
-                    onRecognitionResult?.invoke(VoiceInteractionResult(true, text))
+                    onRecognitionResult?.invoke(VoiceInteractionResult(true, text, isPartial = true))
                 }
             }
 
             override fun onError(errorCode: Int, errorMessage: String) {
                 Logger.e("Native recognition error: $errorCode - $errorMessage", null, TAG)
                 _state.value = VoiceInteractionState.ERROR
-                // 不立即发送错误回调，让用户可以重试
-                // onRecognitionResult?.invoke(VoiceInteractionResult(false, errorMessage = errorMessage))
-                
-                // 恢复空闲状态
                 _state.value = VoiceInteractionState.IDLE
             }
 
@@ -249,14 +304,23 @@ class VoiceManager @Inject constructor(
         }
         
         _lastRecognizedText.value = ""
+        _recordingDuration.value = 0
         _state.value = VoiceInteractionState.LISTENING
         
         when (recognizerType) {
+            SpeechRecognizerType.SILICONFLOW -> {
+                Logger.i("=== Starting SiliconFlow recording ===", TAG)
+                if (siliconFlowApiKey.isBlank()) {
+                    Logger.e("SiliconFlow API key not configured", TAG)
+                    onRecognitionResult?.invoke(VoiceInteractionResult(false, errorMessage = "请先配置 AI API Key"))
+                    _state.value = VoiceInteractionState.IDLE
+                    return
+                }
+                siliconFlowRecognizer.startRecording()
+            }
             SpeechRecognizerType.XUNFEI -> {
                 Logger.i("=== Starting Xunfei recognition ===", TAG)
-                // 确保回调已设置
                 if (xunfeiRecognizer.callback == null) {
-                    Logger.w("Xunfei callback was null, setting it now", TAG)
                     xunfeiRecognizer.callback = createXunfeiRecognitionCallback()
                 }
                 xunfeiRecognizer.startListening()
@@ -272,7 +336,12 @@ class VoiceManager @Inject constructor(
      * 停止语音识别
      */
     fun stopListening() {
+        Logger.i("stopListening called, recognizerType=$recognizerType", TAG)
         when (recognizerType) {
+            SpeechRecognizerType.SILICONFLOW -> {
+                Logger.i("Stopping SiliconFlow recording", TAG)
+                siliconFlowRecognizer.stopRecording()
+            }
             SpeechRecognizerType.XUNFEI -> xunfeiRecognizer.stopListening()
             SpeechRecognizerType.ANDROID_NATIVE -> nativeRecognizer.stopListening()
         }
@@ -282,7 +351,9 @@ class VoiceManager @Inject constructor(
      * 取消语音识别
      */
     fun cancelListening() {
+        Logger.i("cancelListening called", TAG)
         when (recognizerType) {
+            SpeechRecognizerType.SILICONFLOW -> siliconFlowRecognizer.cancel()
             SpeechRecognizerType.XUNFEI -> xunfeiRecognizer.cancel()
             SpeechRecognizerType.ANDROID_NATIVE -> nativeRecognizer.cancel()
         }
@@ -291,8 +362,6 @@ class VoiceManager @Inject constructor(
 
     /**
      * 播报文本
-     * @param text 要播报的文本
-     * @param onComplete 播报完成回调
      */
     fun speak(text: String, onComplete: (() -> Unit)? = null) {
         if (!isInitialized) {
@@ -301,14 +370,12 @@ class VoiceManager @Inject constructor(
             return
         }
         
-        // 如果正在识别，先取消
         if (isListening()) {
             cancelListening()
         }
         
         _state.value = VoiceInteractionState.SPEAKING
         
-        // 设置完成回调
         val originalCallback = tts.callback
         tts.callback = object : TtsCallback {
             override fun onStart(utteranceId: String) {
@@ -344,6 +411,7 @@ class VoiceManager @Inject constructor(
      */
     fun isListening(): Boolean {
         return when (recognizerType) {
+            SpeechRecognizerType.SILICONFLOW -> siliconFlowRecognizer.isRecording
             SpeechRecognizerType.XUNFEI -> xunfeiRecognizer.isListening
             SpeechRecognizerType.ANDROID_NATIVE -> nativeRecognizer.isListening
         }
@@ -375,6 +443,7 @@ class VoiceManager @Inject constructor(
      */
     fun isRecognitionAvailable(): Boolean {
         return when (recognizerType) {
+            SpeechRecognizerType.SILICONFLOW -> siliconFlowApiKey.isNotBlank()
             SpeechRecognizerType.XUNFEI -> XunfeiConfig.isConfigured()
             SpeechRecognizerType.ANDROID_NATIVE -> VoiceRecognizer.isRecognitionAvailable(context)
         }
@@ -386,9 +455,9 @@ class VoiceManager @Inject constructor(
     fun release() {
         nativeRecognizer.release()
         xunfeiRecognizer.release()
+        siliconFlowRecognizer.release()
         tts.release()
         isInitialized = false
         Logger.i("VoiceManager released", TAG)
     }
 }
-
