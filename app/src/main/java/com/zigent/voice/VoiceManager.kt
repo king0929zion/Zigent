@@ -122,21 +122,25 @@ class VoiceManager @Inject constructor(
     private fun createXunfeiRecognitionCallback(): XunfeiRecognitionCallback {
         return object : XunfeiRecognitionCallback {
             override fun onResult(text: String, isLast: Boolean) {
-                Logger.d("Xunfei result: $text, isLast: $isLast", TAG)
+                Logger.d("Xunfei final result: $text, isLast: $isLast", TAG)
                 _lastRecognizedText.value = text
                 _state.value = VoiceInteractionState.IDLE
+                // 最终结果，通知回调
                 onRecognitionResult?.invoke(VoiceInteractionResult(true, text))
             }
 
             override fun onPartialResult(text: String) {
-                Logger.d("Xunfei partial: $text", TAG)
+                Logger.d("Xunfei partial result: $text", TAG)
                 _lastRecognizedText.value = text
+                // 部分结果也通知回调，让UI实时更新
+                onRecognitionResult?.invoke(VoiceInteractionResult(true, text))
             }
 
             override fun onError(errorCode: Int, errorMessage: String) {
                 Logger.e("Xunfei error: $errorMessage", null, TAG)
                 _state.value = VoiceInteractionState.ERROR
-                onRecognitionResult?.invoke(VoiceInteractionResult(false, errorMessage = errorMessage))
+                // 不立即通知错误，让用户可以继续尝试
+                // onRecognitionResult?.invoke(VoiceInteractionResult(false, errorMessage = errorMessage))
                 _state.value = VoiceInteractionState.IDLE
             }
 

@@ -395,14 +395,14 @@ class XunfeiSpeechRecognizer(private val context: Context) {
      */
     private fun handleResponse(text: String) {
         try {
-            Logger.d("Received response: $text", TAG)
+            Logger.d("Received Xunfei response: ${text.take(500)}", TAG)
             
             val response = gson.fromJson(text, JsonObject::class.java)
             val code = response.get("code")?.asInt ?: -1
             
             if (code != 0) {
                 val message = response.get("message")?.asString ?: "未知错误"
-                Logger.e("Server error: $code - $message", null, TAG)
+                Logger.e("Xunfei server error: $code - $message", null, TAG)
                 updateState(XunfeiRecognitionState.ERROR)
                 callback?.onError(code, message)
                 closeWebSocket()
@@ -414,6 +414,8 @@ class XunfeiSpeechRecognizer(private val context: Context) {
             val data = response.getAsJsonObject("data")
             val result = data?.getAsJsonObject("result")
             val status = data?.get("status")?.asInt ?: 0
+            
+            Logger.d("Xunfei data status: $status", TAG)
             
             if (result != null) {
                 val ws = result.getAsJsonArray("ws")
@@ -429,45 +431,44 @@ class XunfeiSpeechRecognizer(private val context: Context) {
                 }
                 
                 val partialText = sb.toString()
+                Logger.d("Xunfei extracted text: '$partialText'", TAG)
+                
                 if (partialText.isNotEmpty()) {
                     // 检查pgs字段（动态修正）
                     val pgs = result.get("pgs")?.asString
                     
                     if (pgs == "rpl") {
-                        // rpl表示替换，需要根据rg范围替换之前的结果
-                        // 简化处理：清空之前的结果，使用新结果
-                        val sn = result.get("sn")?.asInt ?: 0
-                        Logger.d("Replace mode, sn=$sn, text=$partialText", TAG)
-                        // 对于实时显示，直接使用当前帧的结果
-                    } else if (pgs == "apd") {
-                        // apd表示追加
-                        Logger.d("Append mode, text=$partialText", TAG)
-                    }
-                    
-                    // 更新结果（简化处理：直接累加）
-                    if (pgs != "rpl") {
+                        // rpl表示替换，清空之前的结果
+                        resultBuilder.clear()
                         resultBuilder.append(partialText)
+                        Logger.d("Replace mode, new text: $partialText", TAG)
+                    } else {
+                        // 追加模式或无pgs字段
+                        resultBuilder.append(partialText)
+                        Logger.d("Append mode, total: ${resultBuilder}", TAG)
                     }
                     
-                    // 回调部分结果
-                    val currentResult = if (pgs == "rpl") partialText else resultBuilder.toString()
+                    // 回调部分结果 - 使用累积的结果
+                    val currentResult = resultBuilder.toString()
+                    Logger.i("Xunfei partial callback: '$currentResult'", TAG)
                     callback?.onPartialResult(currentResult)
-                    Logger.d("Partial result: $currentResult", TAG)
                 }
             }
             
             // 检查是否是最后一帧响应（status=2表示结束）
             if (status == 2) {
                 val finalResult = resultBuilder.toString()
-                Logger.i("Final result: $finalResult", TAG)
+                Logger.i("Xunfei final result: '$finalResult'", TAG)
                 updateState(XunfeiRecognitionState.SUCCESS)
-                callback?.onResult(finalResult, true)
+                if (finalResult.isNotEmpty()) {
+                    callback?.onResult(finalResult, true)
+                }
                 closeWebSocket()
                 updateState(XunfeiRecognitionState.IDLE)
             }
             
         } catch (e: Exception) {
-            Logger.e("Failed to parse response: $text", e, TAG)
+            Logger.e("Failed to parse Xunfei response: $text", e, TAG)
         }
     }
     
