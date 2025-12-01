@@ -1,12 +1,16 @@
 package com.zigent.ui
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -16,6 +20,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -30,27 +35,31 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
-import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
-import androidx.lifecycle.repeatOnLifecycle
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
+import com.zigent.accessibility.ZigentAccessibilityService
 import com.zigent.ai.AiConfig
 import com.zigent.ai.AiProvider
 import com.zigent.ai.AiSettings
 import com.zigent.agent.AgentEngine
+import com.zigent.core.ServiceManager
 import com.zigent.data.SettingsRepository
+import com.zigent.shizuku.ShizukuState
 import com.zigent.ui.floating.FloatingService
 import com.zigent.ui.settings.SettingsScreen
 import com.zigent.ui.theme.ZigentTheme
 import com.zigent.utils.Logger
 import com.zigent.utils.PermissionHelper
 import dagger.hilt.android.AndroidEntryPoint
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 /**
  * 主界面Activity
- * 负责权限引导和服务控制
+ * 负责权限引导、服务控制和导航
  */
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
@@ -59,548 +68,367 @@ class MainActivity : ComponentActivity() {
         private const val TAG = "MainActivity"
     }
     
-    @Inject
-    lateinit var settingsRepository: SettingsRepository
+    @Inject lateinit var settingsRepository: SettingsRepository
+    @Inject lateinit var agentEngine: AgentEngine
     
-    @Inject
-    lateinit var agentEngine: AgentEngine
-
-    // 权限状态
-    private var hasOverlayPermission by mutableStateOf(false)
-    private var hasAccessibilityPermission by mutableStateOf(false)
-    private var hasMicrophonePermission by mutableStateOf(false)
-    
-    // 服务状态
-    private var isServiceRunning by mutableStateOf(false)
-    
-    // UI导航状态
-    private var showSettings by mutableStateOf(false)
-    
-    // AI设置状态
-    private var currentAiSettings by mutableStateOf(
-        AiSettings(
-            provider = AiProvider.SILICONFLOW,
-            apiKey = "",
-            baseUrl = AiConfig.SILICONFLOW_BASE_URL,
-            model = AiConfig.SILICONFLOW_MODEL
-        )
-    )
-    private var isTestingConnection by mutableStateOf(false)
-    private var testResult by mutableStateOf<String?>(null)
+    // 服务管理器
+    private lateinit var serviceManager: ServiceManager
 
     // 麦克风权限请求
     private val microphonePermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { isGranted ->
-        hasMicrophonePermission = isGranted
         Logger.d("Microphone permission: $isGranted", TAG)
+        refreshStatus()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
-        // 加载保存的AI设置
-        lifecycleScope.launch {
-            settingsRepository.aiSettingsFlow.collect { settings ->
-                currentAiSettings = settings
-                // 配置AgentEngine
-                if (settings.apiKey.isNotBlank()) {
-                    agentEngine.configureAi(settings)
-                }
-            }
-        }
-        
-        // 定期刷新权限状态
-        lifecycleScope.launch {
-            repeatOnLifecycle(Lifecycle.State.RESUMED) {
-                while (true) {
-                    refreshPermissionStatus()
-                    delay(1000)
-                }
-            }
-        }
+        serviceManager = ServiceManager.getInstance(this)
         
         setContent {
             ZigentTheme {
-                if (showSettings) {
-                    SettingsScreen(
-                        currentSettings = currentAiSettings,
-                        onSaveSettings = { settings -> saveAiSettings(settings) },
-                        onTestConnection = { testAiConnection() },
-                        isTestingConnection = isTestingConnection,
-                        testResult = testResult,
-                        onBack = { 
-                            showSettings = false 
-                            testResult = null
-                        }
-                    )
-                } else {
-                    MainScreen(
-                        hasOverlayPermission = hasOverlayPermission,
-                        hasAccessibilityPermission = hasAccessibilityPermission,
-                        hasMicrophonePermission = hasMicrophonePermission,
-                        isServiceRunning = isServiceRunning,
-                        isAiConfigured = currentAiSettings.apiKey.isNotBlank(),
-                        onRequestOverlayPermission = { requestOverlayPermission() },
-                        onRequestAccessibilityPermission = { requestAccessibilityPermission() },
-                        onRequestMicrophonePermission = { requestMicrophonePermission() },
-                        onToggleService = { toggleService() },
-                        onOpenSettings = { showSettings = true }
-                    )
-                }
+                MainApp()
             }
         }
     }
 
     override fun onResume() {
         super.onResume()
-        refreshPermissionStatus()
+        refreshStatus()
+    }
+    
+    private fun refreshStatus() {
+        lifecycleScope.launch {
+            val aiSettings = settingsRepository.aiSettingsFlow.first()
+            serviceManager.refreshStatus(aiSettings.apiKey.isNotBlank())
+        }
     }
 
-    /**
-     * 刷新权限状态
-     */
-    private fun refreshPermissionStatus() {
-        hasOverlayPermission = PermissionHelper.canDrawOverlays(this)
-        hasAccessibilityPermission = PermissionHelper.isAccessibilityServiceEnabled(this)
-        hasMicrophonePermission = ContextCompat.checkSelfPermission(
-            this, Manifest.permission.RECORD_AUDIO
-        ) == PackageManager.PERMISSION_GRANTED
-        isServiceRunning = FloatingService.isRunning
+    @Composable
+    private fun MainApp() {
+        val navController = rememberNavController()
+        val status by serviceManager.status.collectAsState()
+        var currentAiSettings by remember { 
+            mutableStateOf(AiSettings(
+                provider = AiProvider.SILICONFLOW,
+                apiKey = "",
+                baseUrl = AiConfig.SILICONFLOW_BASE_URL,
+                model = AiConfig.SILICONFLOW_MODEL
+            ))
+        }
+        
+        // 加载保存的AI设置
+        LaunchedEffect(Unit) {
+            settingsRepository.aiSettingsFlow.collect { settings ->
+                currentAiSettings = settings
+                serviceManager.refreshStatus(settings.apiKey.isNotBlank())
+            }
+        }
+        
+        NavHost(navController = navController, startDestination = "home") {
+            composable("home") {
+                HomeScreen(
+                    status = status,
+                    aiSettings = currentAiSettings,
+                    isServiceRunning = FloatingService.isRunning,
+                    onToggleService = { toggleService() },
+                    onNavigateToSettings = { navController.navigate("settings") },
+                    onRequestOverlay = { requestOverlayPermission() },
+                    onRequestAccessibility = { requestAccessibilityPermission() },
+                    onRequestMicrophone = { requestMicrophonePermission() },
+                    onRequestShizuku = { serviceManager.requestShizukuPermission() },
+                    onOpenShizukuApp = { openShizukuApp() }
+                )
+            }
+            composable("settings") {
+                SettingsScreen(
+                    currentSettings = currentAiSettings,
+                    onSaveSettings = { newSettings ->
+                        lifecycleScope.launch {
+                            settingsRepository.saveAiSettings(newSettings)
+                            currentAiSettings = newSettings
+                            agentEngine.configureAi(newSettings)
+                            // 更新 FloatingService 中的 Agent
+                            FloatingService.instance?.getInteractionController()?.configureAi(newSettings)
+                        }
+                    },
+                    onTestConnection = { settings, callback ->
+                        lifecycleScope.launch {
+                            try {
+                                agentEngine.configureAi(settings)
+                                val success = agentEngine.testAiConnection()
+                                callback(success, if (success) "连接成功" else "连接失败")
+                            } catch (e: Exception) {
+                                callback(false, "测试失败: ${e.message}")
+                            }
+                        }
+                    },
+                    onBack = { navController.popBackStack() }
+                )
+            }
+        }
     }
 
-    /**
-     * 请求悬浮窗权限
-     */
+    private fun toggleService() {
+        if (FloatingService.isRunning) {
+            FloatingService.stop(this)
+        } else {
+            if (serviceManager.hasOverlayPermission()) {
+                FloatingService.start(this)
+            }
+        }
+    }
+
     private fun requestOverlayPermission() {
         PermissionHelper.requestOverlayPermission(this)
     }
 
-    /**
-     * 请求无障碍权限
-     */
     private fun requestAccessibilityPermission() {
         PermissionHelper.openAccessibilitySettings(this)
     }
 
-    /**
-     * 请求麦克风权限
-     */
     private fun requestMicrophonePermission() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             microphonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
         }
     }
-
-    /**
-     * 切换服务状态
-     */
-    private fun toggleService() {
-        if (isServiceRunning) {
-            FloatingService.stop(this)
-        } else {
-            FloatingService.start(this)
-        }
-        // 稍后刷新状态
-        lifecycleScope.launch {
-            delay(500)
-            refreshPermissionStatus()
-        }
-    }
     
-    /**
-     * 保存AI设置
-     */
-    private fun saveAiSettings(settings: AiSettings) {
-        currentAiSettings = settings
-        lifecycleScope.launch {
-            settingsRepository.saveAiSettings(settings)
-            // 配置AgentEngine
-            if (settings.apiKey.isNotBlank()) {
-                agentEngine.configureAi(settings)
+    private fun openShizukuApp() {
+        try {
+            val intent = packageManager.getLaunchIntentForPackage("moe.shizuku.privileged.api")
+            if (intent != null) {
+                startActivity(intent)
+            } else {
+                // 打开 Google Play
+                val playIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/RikkaApps/Shizuku/releases"))
+                startActivity(playIntent)
             }
-        }
-    }
-    
-    /**
-     * 测试AI连接
-     */
-    private fun testAiConnection() {
-        isTestingConnection = true
-        testResult = null
-        lifecycleScope.launch {
-            try {
-                val success = agentEngine.testAiConnection()
-                testResult = if (success) "✓ 连接成功！" else "✗ 连接失败，请检查设置"
-            } catch (e: Exception) {
-                testResult = "✗ 连接失败: ${e.message}"
-            } finally {
-                isTestingConnection = false
-            }
+        } catch (e: Exception) {
+            Logger.e("Failed to open Shizuku", e, TAG)
         }
     }
 }
 
-/**
- * 主界面Composable
- */
+// ==================== Composable UI Components ====================
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MainScreen(
-    hasOverlayPermission: Boolean,
-    hasAccessibilityPermission: Boolean,
-    hasMicrophonePermission: Boolean,
+private fun HomeScreen(
+    status: com.zigent.core.ServiceStatus,
+    aiSettings: AiSettings,
     isServiceRunning: Boolean,
-    isAiConfigured: Boolean,
-    onRequestOverlayPermission: () -> Unit,
-    onRequestAccessibilityPermission: () -> Unit,
-    onRequestMicrophonePermission: () -> Unit,
     onToggleService: () -> Unit,
-    onOpenSettings: () -> Unit
+    onNavigateToSettings: () -> Unit,
+    onRequestOverlay: () -> Unit,
+    onRequestAccessibility: () -> Unit,
+    onRequestMicrophone: () -> Unit,
+    onRequestShizuku: () -> Unit,
+    onOpenShizukuApp: () -> Unit
 ) {
-    val allPermissionsGranted = hasOverlayPermission && hasAccessibilityPermission && hasMicrophonePermission
+    val scrollState = rememberScrollState()
     
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(
-                Brush.verticalGradient(
-                    colors = listOf(
-                        Color(0xFF0F172A),
-                        Color(0xFF1E293B)
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { 
+                    Text(
+                        "Zigent",
+                        fontWeight = FontWeight.Bold
                     )
+                },
+                actions = {
+                    IconButton(onClick = onNavigateToSettings) {
+                        Icon(Icons.Default.Settings, contentDescription = "设置")
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = Color.Transparent
                 )
             )
-    ) {
+        }
+    ) { paddingValues ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(24.dp)
-                .verticalScroll(rememberScrollState()),
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(
+                            Color(0xFF1a1a2e),
+                            Color(0xFF16213e)
+                        )
+                    )
+                )
+                .padding(paddingValues)
+                .verticalScroll(scrollState)
+                .padding(16.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Spacer(modifier = Modifier.height(40.dp))
-            
-            // Logo和标题
-            AppHeader()
-            
-            Spacer(modifier = Modifier.height(32.dp))
-            
-            // AI设置卡片
-            AiSettingsCard(
-                isConfigured = isAiConfigured,
-                onOpenSettings = onOpenSettings
+            // 状态卡片
+            StatusCard(
+                isReady = status.isReady && status.aiConfigured,
+                isServiceRunning = isServiceRunning,
+                statusMessage = if (status.aiConfigured) status.getReadinessMessage() else "需要配置AI设置"
             )
             
-            Spacer(modifier = Modifier.height(16.dp))
-            
-            // 权限卡片
-            PermissionSection(
-                hasOverlayPermission = hasOverlayPermission,
-                hasAccessibilityPermission = hasAccessibilityPermission,
-                hasMicrophonePermission = hasMicrophonePermission,
-                onRequestOverlayPermission = onRequestOverlayPermission,
-                onRequestAccessibilityPermission = onRequestAccessibilityPermission,
-                onRequestMicrophonePermission = onRequestMicrophonePermission
-            )
-            
-            Spacer(modifier = Modifier.height(32.dp))
+            Spacer(modifier = Modifier.height(24.dp))
             
             // 启动按钮
             ServiceControlButton(
-                enabled = allPermissionsGranted && isAiConfigured,
                 isRunning = isServiceRunning,
-                onClick = onToggleService,
-                needsAiConfig = !isAiConfigured
+                isEnabled = status.isReady,
+                onClick = onToggleService
+            )
+            
+            Spacer(modifier = Modifier.height(24.dp))
+            
+            // 权限设置
+            Text(
+                "权限设置",
+                style = MaterialTheme.typography.titleMedium,
+                color = Color.White,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 12.dp)
+            )
+            
+            // 悬浮窗权限
+            PermissionCard(
+                icon = Icons.Outlined.Layers,
+                title = "悬浮窗权限",
+                description = "显示悬浮球",
+                isGranted = status.overlayPermission,
+                onClick = onRequestOverlay
+            )
+            
+            // 无障碍服务
+            PermissionCard(
+                icon = Icons.Outlined.Accessibility,
+                title = "无障碍服务",
+                description = "控制手机操作",
+                isGranted = status.accessibilityEnabled,
+                onClick = onRequestAccessibility
+            )
+            
+            // Shizuku
+            ShizukuCard(
+                state = status.shizukuState,
+                onRequestPermission = onRequestShizuku,
+                onOpenApp = onOpenShizukuApp
+            )
+            
+            // 麦克风权限
+            PermissionCard(
+                icon = Icons.Outlined.Mic,
+                title = "麦克风权限",
+                description = "语音输入",
+                isGranted = status.microphonePermission,
+                onClick = onRequestMicrophone
+            )
+            
+            Spacer(modifier = Modifier.height(24.dp))
+            
+            // AI配置
+            Text(
+                "AI配置",
+                style = MaterialTheme.typography.titleMedium,
+                color = Color.White,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 12.dp)
+            )
+            
+            AiConfigCard(
+                isConfigured = status.aiConfigured,
+                provider = aiSettings.provider.name,
+                onClick = onNavigateToSettings
             )
             
             Spacer(modifier = Modifier.height(24.dp))
             
             // 使用说明
-            UsageInstructions()
-            
-            Spacer(modifier = Modifier.height(40.dp))
+            UsageGuide()
         }
     }
 }
 
-/**
- * 应用头部
- */
 @Composable
-fun AppHeader() {
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        // Logo
-        Box(
-            modifier = Modifier
-                .size(80.dp)
-                .clip(CircleShape)
-                .background(
-                    Brush.linearGradient(
-                        colors = listOf(
-                            Color(0xFF6366F1),
-                            Color(0xFF8B5CF6)
-                        )
-                    )
-                ),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                text = "Z",
-                fontSize = 36.sp,
-                fontWeight = FontWeight.Bold,
-                color = Color.White
-            )
-        }
-        
-        Spacer(modifier = Modifier.height(16.dp))
-        
-        Text(
-            text = "Zigent",
-            fontSize = 28.sp,
-            fontWeight = FontWeight.Bold,
-            color = Color.White
-        )
-        
-        Text(
-            text = "AI智能手机助手",
-            fontSize = 14.sp,
-            color = Color(0xFF94A3B8)
-        )
-    }
-}
-
-/**
- * 权限配置区域
- */
-@Composable
-fun PermissionSection(
-    hasOverlayPermission: Boolean,
-    hasAccessibilityPermission: Boolean,
-    hasMicrophonePermission: Boolean,
-    onRequestOverlayPermission: () -> Unit,
-    onRequestAccessibilityPermission: () -> Unit,
-    onRequestMicrophonePermission: () -> Unit
+private fun StatusCard(
+    isReady: Boolean,
+    isServiceRunning: Boolean,
+    statusMessage: String
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
-            containerColor = Color(0xFF1E293B)
-        )
-    ) {
-        Column(
-            modifier = Modifier.padding(20.dp)
-        ) {
-            Text(
-                text = "权限配置",
-                fontSize = 18.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = Color.White
-            )
-            
-            Spacer(modifier = Modifier.height(16.dp))
-            
-            PermissionItem(
-                icon = Icons.Default.Layers,
-                title = "悬浮窗权限",
-                description = "显示悬浮球界面",
-                isGranted = hasOverlayPermission,
-                onRequest = onRequestOverlayPermission
-            )
-            
-            Spacer(modifier = Modifier.height(12.dp))
-            
-            PermissionItem(
-                icon = Icons.Default.Accessibility,
-                title = "无障碍服务",
-                description = "读取屏幕内容和执行操作",
-                isGranted = hasAccessibilityPermission,
-                onRequest = onRequestAccessibilityPermission
-            )
-            
-            Spacer(modifier = Modifier.height(12.dp))
-            
-            PermissionItem(
-                icon = Icons.Default.Mic,
-                title = "麦克风权限",
-                description = "语音输入功能",
-                isGranted = hasMicrophonePermission,
-                onRequest = onRequestMicrophonePermission
-            )
-        }
-    }
-}
-
-/**
- * 权限项
- */
-@Composable
-fun PermissionItem(
-    icon: ImageVector,
-    title: String,
-    description: String,
-    isGranted: Boolean,
-    onRequest: () -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .background(Color(0xFF334155))
-            .padding(16.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        // 图标
-        Box(
-            modifier = Modifier
-                .size(40.dp)
-                .clip(CircleShape)
-                .background(
-                    if (isGranted) Color(0xFF10B981).copy(alpha = 0.2f)
-                    else Color(0xFF6366F1).copy(alpha = 0.2f)
-                ),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = if (isGranted) Color(0xFF10B981) else Color(0xFF6366F1),
-                modifier = Modifier.size(20.dp)
-            )
-        }
-        
-        Spacer(modifier = Modifier.width(12.dp))
-        
-        // 文字
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = title,
-                fontSize = 14.sp,
-                fontWeight = FontWeight.Medium,
-                color = Color.White
-            )
-            Text(
-                text = description,
-                fontSize = 12.sp,
-                color = Color(0xFF94A3B8)
-            )
-        }
-        
-        // 状态/按钮
-        if (isGranted) {
-            Icon(
-                imageVector = Icons.Default.CheckCircle,
-                contentDescription = "已授权",
-                tint = Color(0xFF10B981),
-                modifier = Modifier.size(24.dp)
-            )
-        } else {
-            TextButton(
-                onClick = onRequest,
-                colors = ButtonDefaults.textButtonColors(
-                    contentColor = Color(0xFF6366F1)
-                )
-            ) {
-                Text("授权")
-            }
-        }
-    }
-}
-
-/**
- * AI设置卡片
- */
-@Composable
-fun AiSettingsCard(
-    isConfigured: Boolean,
-    onOpenSettings: () -> Unit
-) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
-            .clickable { onOpenSettings() },
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = Color(0xFF1E293B)
-        )
+            containerColor = if (isReady) Color(0xFF1B5E20).copy(alpha = 0.3f) 
+                           else Color(0xFFB71C1C).copy(alpha = 0.3f)
+        ),
+        shape = RoundedCornerShape(16.dp)
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(20.dp),
+                .padding(16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // 图标
             Box(
                 modifier = Modifier
                     .size(48.dp)
                     .clip(CircleShape)
-                    .background(
-                        if (isConfigured) Color(0xFF10B981).copy(alpha = 0.2f)
-                        else Color(0xFFEF4444).copy(alpha = 0.2f)
-                    ),
+                    .background(if (isReady) Color(0xFF4CAF50) else Color(0xFFF44336)),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
-                    imageVector = Icons.Default.Psychology,
+                    imageVector = if (isServiceRunning) Icons.Default.PlayArrow 
+                                 else if (isReady) Icons.Default.Check 
+                                 else Icons.Default.Warning,
                     contentDescription = null,
-                    tint = if (isConfigured) Color(0xFF10B981) else Color(0xFFEF4444),
-                    modifier = Modifier.size(24.dp)
+                    tint = Color.White
                 )
             }
             
             Spacer(modifier = Modifier.width(16.dp))
             
-            // 文字
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "AI设置",
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = Color.White
+                    text = when {
+                        isServiceRunning -> "服务运行中"
+                        isReady -> "已就绪"
+                        else -> "需要配置"
+                    },
+                    style = MaterialTheme.typography.titleMedium,
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold
                 )
                 Text(
-                    text = if (isConfigured) "已配置 - 点击修改" else "未配置 - 点击设置API Key",
-                    fontSize = 13.sp,
-                    color = if (isConfigured) Color(0xFF10B981) else Color(0xFFEF4444)
+                    text = statusMessage,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.White.copy(alpha = 0.7f)
                 )
             }
-            
-            // 箭头
-            Icon(
-                imageVector = Icons.Default.ChevronRight,
-                contentDescription = "进入设置",
-                tint = Color(0xFF64748B),
-                modifier = Modifier.size(24.dp)
-            )
         }
     }
 }
 
-/**
- * 服务控制按钮
- */
 @Composable
-fun ServiceControlButton(
-    enabled: Boolean,
+private fun ServiceControlButton(
     isRunning: Boolean,
-    onClick: () -> Unit,
-    needsAiConfig: Boolean = false
+    isEnabled: Boolean,
+    onClick: () -> Unit
 ) {
     Button(
         onClick = onClick,
-        enabled = enabled,
+        enabled = isEnabled || isRunning,
         modifier = Modifier
             .fillMaxWidth()
             .height(56.dp),
-        shape = RoundedCornerShape(16.dp),
         colors = ButtonDefaults.buttonColors(
-            containerColor = if (isRunning) Color(0xFFEF4444) else Color(0xFF6366F1),
-            disabledContainerColor = Color(0xFF475569)
-        )
+            containerColor = if (isRunning) Color(0xFFF44336) else Color(0xFF6366F1),
+            disabledContainerColor = Color.Gray
+        ),
+        shape = RoundedCornerShape(28.dp)
     ) {
         Icon(
             imageVector = if (isRunning) Icons.Default.Stop else Icons.Default.PlayArrow,
@@ -611,108 +439,266 @@ fun ServiceControlButton(
         Text(
             text = if (isRunning) "停止服务" else "启动服务",
             fontSize = 16.sp,
-            fontWeight = FontWeight.SemiBold
-        )
-    }
-    
-    if (!enabled) {
-        Spacer(modifier = Modifier.height(8.dp))
-        Text(
-            text = if (needsAiConfig) "请先配置AI设置" else "请先授予所有权限",
-            fontSize = 12.sp,
-            color = Color(0xFF94A3B8),
-            textAlign = TextAlign.Center,
-            modifier = Modifier.fillMaxWidth()
+            fontWeight = FontWeight.Bold
         )
     }
 }
 
-/**
- * 使用说明
- */
 @Composable
-fun UsageInstructions() {
+private fun PermissionCard(
+    icon: ImageVector,
+    title: String,
+    description: String,
+    isGranted: Boolean,
+    onClick: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp)
+            .clickable(enabled = !isGranted, onClick = onClick),
+        colors = CardDefaults.cardColors(
+            containerColor = Color.White.copy(alpha = 0.1f)
+        ),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = if (isGranted) Color(0xFF4CAF50) else Color.White.copy(alpha = 0.7f),
+                modifier = Modifier.size(24.dp)
+            )
+            
+            Spacer(modifier = Modifier.width(16.dp))
+            
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = Color.White
+                )
+                Text(
+                    text = description,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.White.copy(alpha = 0.6f)
+                )
+            }
+            
+            if (isGranted) {
+                Icon(
+                    imageVector = Icons.Default.CheckCircle,
+                    contentDescription = "已授权",
+                    tint = Color(0xFF4CAF50)
+                )
+            } else {
+                Icon(
+                    imageVector = Icons.Default.ChevronRight,
+                    contentDescription = "去设置",
+                    tint = Color.White.copy(alpha = 0.5f)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ShizukuCard(
+    state: ShizukuState,
+    onRequestPermission: () -> Unit,
+    onOpenApp: () -> Unit
+) {
+    val (statusText, statusColor, action) = when (state) {
+        ShizukuState.NOT_INSTALLED -> Triple("未安装", Color(0xFFFF9800), onOpenApp)
+        ShizukuState.NOT_RUNNING -> Triple("未启动", Color(0xFFFF9800), onOpenApp)
+        ShizukuState.NOT_AUTHORIZED -> Triple("未授权", Color(0xFFFF9800), onRequestPermission)
+        ShizukuState.READY -> Triple("已就绪", Color(0xFF4CAF50), {})
+    }
+    
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp)
+            .clickable(enabled = state != ShizukuState.READY, onClick = action),
+        colors = CardDefaults.cardColors(
+            containerColor = Color.White.copy(alpha = 0.1f)
+        ),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = Icons.Outlined.AdminPanelSettings,
+                contentDescription = null,
+                tint = statusColor,
+                modifier = Modifier.size(24.dp)
+            )
+            
+            Spacer(modifier = Modifier.width(16.dp))
+            
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Shizuku (可选)",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = Color.White
+                )
+                Text(
+                    text = "截屏和高级操作 · $statusText",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.White.copy(alpha = 0.6f)
+                )
+            }
+            
+            if (state == ShizukuState.READY) {
+                Icon(
+                    imageVector = Icons.Default.CheckCircle,
+                    contentDescription = "已就绪",
+                    tint = Color(0xFF4CAF50)
+                )
+            } else {
+                Icon(
+                    imageVector = Icons.Default.ChevronRight,
+                    contentDescription = null,
+                    tint = Color.White.copy(alpha = 0.5f)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AiConfigCard(
+    isConfigured: Boolean,
+    provider: String,
+    onClick: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isConfigured) Color(0xFF6366F1).copy(alpha = 0.3f) 
+                           else Color.White.copy(alpha = 0.1f)
+        ),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = Icons.Outlined.Psychology,
+                contentDescription = null,
+                tint = if (isConfigured) Color(0xFF6366F1) else Color.White.copy(alpha = 0.7f),
+                modifier = Modifier.size(24.dp)
+            )
+            
+            Spacer(modifier = Modifier.width(16.dp))
+            
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "AI 模型配置",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = Color.White
+                )
+                Text(
+                    text = if (isConfigured) "已配置: $provider" else "点击配置 API Key",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.White.copy(alpha = 0.6f)
+                )
+            }
+            
+            if (isConfigured) {
+                Icon(
+                    imageVector = Icons.Default.CheckCircle,
+                    contentDescription = "已配置",
+                    tint = Color(0xFF4CAF50)
+                )
+            } else {
+                Icon(
+                    imageVector = Icons.Default.ChevronRight,
+                    contentDescription = null,
+                    tint = Color.White.copy(alpha = 0.5f)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun UsageGuide() {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
-            containerColor = Color(0xFF1E293B)
-        )
+            containerColor = Color.White.copy(alpha = 0.05f)
+        ),
+        shape = RoundedCornerShape(12.dp)
     ) {
         Column(
-            modifier = Modifier.padding(20.dp)
+            modifier = Modifier.padding(16.dp)
         ) {
             Text(
-                text = "使用说明",
-                fontSize = 18.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = Color.White
+                text = "📖 使用指南",
+                style = MaterialTheme.typography.titleMedium,
+                color = Color.White,
+                fontWeight = FontWeight.Bold
             )
             
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(12.dp))
             
-            InstructionStep(
-                number = "1",
-                text = "点击悬浮球开始语音输入"
-            )
+            GuideStep(number = "1", text = "授予必要权限并配置 AI")
+            GuideStep(number = "2", text = "点击"启动服务"显示悬浮球")
+            GuideStep(number = "3", text = "点击悬浮球开始语音输入")
+            GuideStep(number = "4", text = "说完后再次点击悬浮球")
+            GuideStep(number = "5", text = "AI 将自动执行您的指令")
             
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(12.dp))
             
-            InstructionStep(
-                number = "2",
-                text = "说出你想让AI完成的任务"
-            )
-            
-            Spacer(modifier = Modifier.height(8.dp))
-            
-            InstructionStep(
-                number = "3",
-                text = "再次点击悬浮球结束语音"
-            )
-            
-            Spacer(modifier = Modifier.height(8.dp))
-            
-            InstructionStep(
-                number = "4",
-                text = "AI将自动控制手机完成任务"
+            Text(
+                text = "💡 提示：安装 Shizuku 可获得截屏和更强的操作能力",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFF6366F1)
             )
         }
     }
 }
 
-/**
- * 使用步骤项
- */
 @Composable
-fun InstructionStep(
-    number: String,
-    text: String
-) {
+private fun GuideStep(number: String, text: String) {
     Row(
+        modifier = Modifier.padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
             modifier = Modifier
                 .size(24.dp)
                 .clip(CircleShape)
-                .background(Color(0xFF6366F1).copy(alpha = 0.2f)),
+                .background(Color(0xFF6366F1)),
             contentAlignment = Alignment.Center
         ) {
             Text(
                 text = number,
+                color = Color.White,
                 fontSize = 12.sp,
-                fontWeight = FontWeight.Bold,
-                color = Color(0xFF6366F1)
+                fontWeight = FontWeight.Bold
             )
         }
-        
         Spacer(modifier = Modifier.width(12.dp))
-        
         Text(
             text = text,
-            fontSize = 14.sp,
-            color = Color(0xFFE2E8F0)
+            style = MaterialTheme.typography.bodyMedium,
+            color = Color.White.copy(alpha = 0.8f)
         )
     }
 }
-
