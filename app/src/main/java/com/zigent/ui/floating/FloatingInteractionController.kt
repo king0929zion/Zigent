@@ -12,6 +12,8 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.first
 
 /**
  * 交互阶段
@@ -201,29 +203,29 @@ class FloatingInteractionController(
         if (voiceManager.isSpeaking()) {
             voiceManager.stopSpeaking()
         }
-        
-        // 获取当前已识别的文本
-        val currentText = _recognizedText.value.ifBlank { 
-            voiceManager.lastRecognizedText.value 
-        }
-        
-        // 取消语音识别
-        voiceManager.cancelListening()
-        
-        if (currentText.isNotBlank()) {
-            // 有识别到文本，直接处理
-            Logger.i("Processing recognized text: $currentText", TAG)
-            callback?.onVoiceResult(currentText)
-            startAiProcessing(currentText)
-        } else {
-            // 没有识别到文本
-            Logger.w("No text recognized", TAG)
-            _phase.value = InteractionPhase.ERROR
-            callback?.onError("没有检测到语音")
-            voiceManager.speak("没有检测到语音，请重试") {
-                scope.launch {
-                    delay(1000)
-                    reset()
+
+        // 优先尝试优雅停止录音，等待引擎返回最终文本而不是直接取消
+        voiceManager.stopListening()
+
+        scope.launch {
+            val finalText = waitForRecognizedText()
+
+            if (finalText.isNotBlank()) {
+                Logger.i("Processing recognized text: $finalText", TAG)
+                _recognizedText.value = finalText
+                callback?.onVoiceResult(finalText)
+                startAiProcessing(finalText)
+            } else {
+                Logger.w("No text recognized after waiting", TAG)
+                _phase.value = InteractionPhase.ERROR
+                callback?.onError("没有检测到语音")
+                // 确保完全停止后再提示用户
+                voiceManager.cancelListening()
+                voiceManager.speak("没有检测到语音，请重试") {
+                    scope.launch {
+                        delay(1000)
+                        reset()
+                    }
                 }
             }
         }
@@ -249,6 +251,32 @@ class FloatingInteractionController(
             Logger.w("Voice recognition error: ${result.errorMessage}", TAG)
             // 不自动处理错误，让用户可以继续尝试或点击悬浮球结束
         }
+    }
+
+    /**
+     * 等待语音识别结果，给最终文本一个短暂的落地时间
+     */
+    private suspend fun waitForRecognizedText(timeoutMs: Long = 2000L): String {
+        val existing = currentRecognizedText()
+        if (existing.isNotBlank()) {
+            return existing
+        }
+
+        // 等待新结果落地，超时后再回退检查一次
+        val awaited = withTimeoutOrNull(timeoutMs) {
+            voiceManager.lastRecognizedText
+                .filter { it.isNotBlank() }
+                .first()
+        } ?: ""
+
+        return if (awaited.isNotBlank()) awaited else currentRecognizedText()
+    }
+
+    /**
+     * 获取当前最新的识别文本（本地缓存优先）
+     */
+    private fun currentRecognizedText(): String {
+        return _recognizedText.value.ifBlank { voiceManager.lastRecognizedText.value }
     }
 
     /**
