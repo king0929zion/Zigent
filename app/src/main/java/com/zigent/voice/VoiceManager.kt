@@ -84,35 +84,39 @@ class VoiceManager @Inject constructor(
      */
     fun initialize(onComplete: ((Boolean) -> Unit)? = null) {
         if (isInitialized) {
+            Logger.d("VoiceManager already initialized", TAG)
             onComplete?.invoke(true)
             return
         }
         
         Logger.i("Initializing VoiceManager with $recognizerType", TAG)
         
-        // 初始化语音识别
+        // 初始化语音识别 - 总是设置回调
+        xunfeiRecognizer.callback = createXunfeiRecognitionCallback()
+        nativeRecognizer.callback = createRecognitionCallback()
+        
         when (recognizerType) {
             SpeechRecognizerType.XUNFEI -> {
-                // 讯飞不需要显式初始化，连接时自动初始化
-                xunfeiRecognizer.callback = createXunfeiRecognitionCallback()
                 Logger.i("Xunfei recognizer configured", TAG)
             }
             SpeechRecognizerType.ANDROID_NATIVE -> {
                 nativeRecognizer.initialize()
-                nativeRecognizer.callback = createRecognitionCallback()
+                Logger.i("Native recognizer initialized", TAG)
             }
         }
         
-        // 初始化TTS
+        // 初始化TTS - 即使TTS失败，语音识别也应该可以工作
         tts.initialize { success ->
-            isInitialized = success
             if (success) {
                 tts.callback = createTtsCallback()
-                Logger.i("VoiceManager initialized", TAG)
+                Logger.i("TTS initialized successfully", TAG)
             } else {
-                Logger.e("Failed to initialize VoiceManager", null, TAG)
+                Logger.w("TTS initialization failed, but recognition should still work", TAG)
             }
-            onComplete?.invoke(success)
+            // 无论TTS是否成功，都标记为已初始化
+            isInitialized = true
+            Logger.i("VoiceManager initialized (TTS: $success)", TAG)
+            onComplete?.invoke(true)
         }
     }
     
@@ -218,16 +222,20 @@ class VoiceManager @Inject constructor(
      * 开始语音识别
      */
     fun startListening() {
+        Logger.i("startListening called, isInitialized=$isInitialized, recognizerType=$recognizerType", TAG)
+        
         if (!isInitialized) {
             Logger.w("VoiceManager not initialized, initializing now", TAG)
             initialize {
-                if (it) startListening()
+                Logger.i("VoiceManager initialization complete, starting listening", TAG)
+                startListening()
             }
             return
         }
         
         // 如果正在播报，先停止
         if (tts.isSpeaking()) {
+            Logger.d("Stopping TTS before listening", TAG)
             tts.stop()
         }
         
@@ -236,11 +244,16 @@ class VoiceManager @Inject constructor(
         
         when (recognizerType) {
             SpeechRecognizerType.XUNFEI -> {
-                Logger.i("Starting Xunfei recognition", TAG)
+                Logger.i("=== Starting Xunfei recognition ===", TAG)
+                // 确保回调已设置
+                if (xunfeiRecognizer.callback == null) {
+                    Logger.w("Xunfei callback was null, setting it now", TAG)
+                    xunfeiRecognizer.callback = createXunfeiRecognitionCallback()
+                }
                 xunfeiRecognizer.startListening()
             }
             SpeechRecognizerType.ANDROID_NATIVE -> {
-                Logger.i("Starting native recognition", TAG)
+                Logger.i("=== Starting native recognition ===", TAG)
                 nativeRecognizer.startListening()
             }
         }

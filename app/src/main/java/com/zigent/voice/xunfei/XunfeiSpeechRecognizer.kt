@@ -95,39 +95,53 @@ class XunfeiSpeechRecognizer(private val context: Context) {
      * 开始语音识别
      */
     fun startListening() {
+        Logger.i("=== XunfeiSpeechRecognizer.startListening() ===", TAG)
+        
         if (isListening) {
-            Logger.w("Already listening", TAG)
+            Logger.w("Already listening, ignoring", TAG)
             return
         }
         
         if (!XunfeiConfig.isConfigured()) {
-            Logger.e("Xunfei not configured", null, TAG)
+            Logger.e("Xunfei not configured! APPID=${XunfeiConfig.APPID}", null, TAG)
             updateState(XunfeiRecognitionState.ERROR)
             callback?.onError(-1, "讯飞语音服务未配置")
             return
         }
         
+        Logger.i("Xunfei config: APPID=${XunfeiConfig.APPID}, API_KEY=${XunfeiConfig.API_KEY.take(8)}...", TAG)
+        
         // 检查麦克风权限
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO)
             != PackageManager.PERMISSION_GRANTED) {
-            Logger.e("No microphone permission", null, TAG)
+            Logger.e("No microphone permission!", null, TAG)
             updateState(XunfeiRecognitionState.ERROR)
             callback?.onError(-2, "没有麦克风权限")
             return
         }
         
+        Logger.i("Microphone permission OK", TAG)
+        
         resultBuilder.clear()
         updateState(XunfeiRecognitionState.CONNECTING)
         
         // 生成鉴权URL并连接WebSocket
-        val authUrl = generateAuthUrl()
-        Logger.d("Connecting to: $authUrl", TAG)
-        
-        val request = Request.Builder()
-            .url(authUrl)
-            .build()
-        
-        webSocket = okHttpClient.newWebSocket(request, createWebSocketListener())
+        try {
+            val authUrl = generateAuthUrl()
+            Logger.i("Connecting to Xunfei WebSocket...", TAG)
+            Logger.d("Auth URL: ${authUrl.take(100)}...", TAG)
+            
+            val request = Request.Builder()
+                .url(authUrl)
+                .build()
+            
+            webSocket = okHttpClient.newWebSocket(request, createWebSocketListener())
+            Logger.i("WebSocket connection initiated", TAG)
+        } catch (e: Exception) {
+            Logger.e("Failed to create WebSocket connection", e, TAG)
+            updateState(XunfeiRecognitionState.ERROR)
+            callback?.onError(-3, "连接失败: ${e.message}")
+        }
     }
     
     /**
@@ -208,25 +222,36 @@ class XunfeiSpeechRecognizer(private val context: Context) {
     private fun createWebSocketListener(): WebSocketListener {
         return object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                Logger.i("WebSocket connected", TAG)
+                Logger.i("=== WebSocket CONNECTED to Xunfei ===", TAG)
+                Logger.d("Response: ${response.code} ${response.message}", TAG)
                 updateState(XunfeiRecognitionState.LISTENING)
                 startRecording()
             }
             
             override fun onMessage(webSocket: WebSocket, text: String) {
+                Logger.d("WebSocket message received", TAG)
                 handleResponse(text)
             }
             
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                Logger.e("WebSocket error: ${t.message}", t, TAG)
+                Logger.e("=== WebSocket FAILED ===", t, TAG)
+                Logger.e("Error: ${t.message}", null, TAG)
+                response?.let { 
+                    Logger.e("Response: ${it.code} ${it.message}", null, TAG) 
+                    try {
+                        Logger.e("Body: ${it.body?.string()?.take(500)}", null, TAG)
+                    } catch (e: Exception) {
+                        // ignore
+                    }
+                }
                 stopRecording()
                 updateState(XunfeiRecognitionState.ERROR)
-                callback?.onError(-3, "连接失败: ${t.message}")
+                callback?.onError(-3, "WebSocket连接失败: ${t.message}")
                 updateState(XunfeiRecognitionState.IDLE)
             }
             
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                Logger.i("WebSocket closed: $code $reason", TAG)
+                Logger.i("=== WebSocket CLOSED: $code $reason ===", TAG)
                 stopRecording()
                 if (_state.value != XunfeiRecognitionState.SUCCESS) {
                     updateState(XunfeiRecognitionState.IDLE)
@@ -239,11 +264,15 @@ class XunfeiSpeechRecognizer(private val context: Context) {
      * 开始录音
      */
     private fun startRecording() {
+        Logger.i("=== Starting audio recording ===", TAG)
+        
         val bufferSize = AudioRecord.getMinBufferSize(
             XunfeiConfig.SAMPLE_RATE,
             AudioFormat.CHANNEL_IN_MONO,
             AudioFormat.ENCODING_PCM_16BIT
         )
+        
+        Logger.d("Buffer size: $bufferSize", TAG)
         
         try {
             audioRecord = AudioRecord(
@@ -255,14 +284,15 @@ class XunfeiSpeechRecognizer(private val context: Context) {
             )
             
             if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
-                Logger.e("AudioRecord initialization failed", null, TAG)
+                Logger.e("AudioRecord initialization FAILED! State: ${audioRecord?.state}", null, TAG)
                 updateState(XunfeiRecognitionState.ERROR)
                 callback?.onError(-4, "音频录制初始化失败")
                 return
             }
             
+            Logger.i("AudioRecord initialized successfully", TAG)
             audioRecord?.startRecording()
-            Logger.i("Recording started", TAG)
+            Logger.i("=== Recording STARTED ===", TAG)
             
             // 启动发送音频数据的协程
             recordingJob = scope.launch {

@@ -197,26 +197,34 @@ class FloatingInteractionController(
      * 用户再次点击悬浮球时调用
      */
     private fun finishVoiceInput() {
-        Logger.i("Finishing voice input", TAG)
+        Logger.i("=== finishVoiceInput() called ===", TAG)
+        Logger.d("Current _recognizedText: '${_recognizedText.value}'", TAG)
+        Logger.d("Current lastRecognizedText: '${voiceManager.lastRecognizedText.value}'", TAG)
         
         // 先停止TTS（如果还在播报提示语）
         if (voiceManager.isSpeaking()) {
+            Logger.d("Stopping TTS first", TAG)
             voiceManager.stopSpeaking()
         }
 
         // 优先尝试优雅停止录音，等待引擎返回最终文本而不是直接取消
+        Logger.i("Stopping voice listening...", TAG)
         voiceManager.stopListening()
 
         scope.launch {
+            Logger.d("Waiting for recognized text...", TAG)
             val finalText = waitForRecognizedText()
+            Logger.i("waitForRecognizedText returned: '$finalText'", TAG)
 
             if (finalText.isNotBlank()) {
-                Logger.i("Processing recognized text: $finalText", TAG)
+                Logger.i("=== Processing recognized text: $finalText ===", TAG)
                 _recognizedText.value = finalText
                 callback?.onVoiceResult(finalText)
                 startAiProcessing(finalText)
             } else {
-                Logger.w("No text recognized after waiting", TAG)
+                Logger.w("=== No text recognized after waiting! ===", TAG)
+                Logger.d("Final _recognizedText: '${_recognizedText.value}'", TAG)
+                Logger.d("Final lastRecognizedText: '${voiceManager.lastRecognizedText.value}'", TAG)
                 _phase.value = InteractionPhase.ERROR
                 callback?.onError("没有检测到语音")
                 // 确保完全停止后再提示用户
