@@ -53,8 +53,8 @@ class VoiceManager @Inject constructor(
         private const val TAG = "VoiceManager"
     }
 
-    // 语音识别服务类型（默认使用讯飞）
-    var recognizerType: SpeechRecognizerType = SpeechRecognizerType.XUNFEI
+    // 语音识别服务类型（默认使用Android系统STT）
+    var recognizerType: SpeechRecognizerType = SpeechRecognizerType.ANDROID_NATIVE
     
     // Android原生语音识别器
     private val nativeRecognizer = VoiceRecognizer(context)
@@ -167,34 +167,43 @@ class VoiceManager @Inject constructor(
     private fun createRecognitionCallback(): VoiceRecognitionCallback {
         return object : VoiceRecognitionCallback {
             override fun onResult(text: String) {
-                Logger.d("Native recognition result: $text", TAG)
+                Logger.i("=== Native final result: '$text' ===", TAG)
                 _lastRecognizedText.value = text
                 _state.value = VoiceInteractionState.IDLE
-                onRecognitionResult?.invoke(VoiceInteractionResult(true, text))
+                if (text.isNotBlank()) {
+                    onRecognitionResult?.invoke(VoiceInteractionResult(true, text))
+                }
             }
 
             override fun onPartialResult(text: String) {
-                Logger.d("Native partial result: $text", TAG)
+                Logger.i("Native partial result: '$text'", TAG)
                 _lastRecognizedText.value = text
+                // 部分结果也通知回调，让UI实时更新
+                if (text.isNotBlank()) {
+                    onRecognitionResult?.invoke(VoiceInteractionResult(true, text))
+                }
             }
 
             override fun onError(errorCode: Int, errorMessage: String) {
-                Logger.e("Native recognition error: $errorMessage", null, TAG)
+                Logger.e("Native recognition error: $errorCode - $errorMessage", null, TAG)
                 _state.value = VoiceInteractionState.ERROR
-                onRecognitionResult?.invoke(VoiceInteractionResult(false, errorMessage = errorMessage))
+                // 不立即发送错误回调，让用户可以重试
+                // onRecognitionResult?.invoke(VoiceInteractionResult(false, errorMessage = errorMessage))
                 
                 // 恢复空闲状态
                 _state.value = VoiceInteractionState.IDLE
             }
 
             override fun onStateChanged(state: RecognitionState) {
-                _state.value = when (state) {
+                val newState = when (state) {
                     RecognitionState.IDLE -> VoiceInteractionState.IDLE
                     RecognitionState.LISTENING -> VoiceInteractionState.LISTENING
                     RecognitionState.PROCESSING -> VoiceInteractionState.RECOGNIZING
                     RecognitionState.SUCCESS -> VoiceInteractionState.IDLE
                     RecognitionState.ERROR -> VoiceInteractionState.ERROR
                 }
+                Logger.d("Native state changed: $state -> $newState", TAG)
+                _state.value = newState
             }
         }
     }

@@ -108,12 +108,12 @@ class VoiceRecognizer(private val context: Context) {
     private fun createRecognitionListener(): RecognitionListener {
         return object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle?) {
-                Logger.d("Ready for speech", TAG)
+                Logger.i("=== Ready for speech ===", TAG)
                 updateState(RecognitionState.LISTENING)
             }
 
             override fun onBeginningOfSpeech() {
-                Logger.d("Beginning of speech", TAG)
+                Logger.i("Beginning of speech detected", TAG)
             }
 
             override fun onRmsChanged(rmsdB: Float) {
@@ -125,14 +125,20 @@ class VoiceRecognizer(private val context: Context) {
             }
 
             override fun onEndOfSpeech() {
-                Logger.d("End of speech", TAG)
+                Logger.i("End of speech detected", TAG)
                 updateState(RecognitionState.PROCESSING)
             }
 
             override fun onError(error: Int) {
                 val errorMessage = getErrorMessage(error)
-                Logger.e("Recognition error: $errorMessage", TAG)
+                Logger.e("=== Recognition error: $error - $errorMessage ===", TAG)
                 updateState(RecognitionState.ERROR)
+                
+                // 对于 NO_MATCH 错误，不视为严重错误
+                if (error == SpeechRecognizer.ERROR_NO_MATCH) {
+                    Logger.w("No speech detected, but this is not a fatal error", TAG)
+                }
+                
                 callback?.onError(error, errorMessage)
                 
                 // 某些错误后恢复空闲状态
@@ -145,7 +151,11 @@ class VoiceRecognizer(private val context: Context) {
                 val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                 val text = matches?.firstOrNull() ?: ""
                 
-                Logger.d("Recognition result: $text", TAG)
+                Logger.i("=== Final recognition result: '$text' ===", TAG)
+                if (matches != null && matches.size > 1) {
+                    Logger.d("Alternative results: ${matches.drop(1)}", TAG)
+                }
+                
                 updateState(RecognitionState.SUCCESS)
                 callback?.onResult(text)
                 
@@ -158,7 +168,7 @@ class VoiceRecognizer(private val context: Context) {
                 val text = matches?.firstOrNull() ?: ""
                 
                 if (text.isNotEmpty()) {
-                    Logger.d("Partial result: $text", TAG)
+                    Logger.i("Partial result: '$text'", TAG)
                     callback?.onPartialResult(text)
                 }
             }
@@ -174,13 +184,22 @@ class VoiceRecognizer(private val context: Context) {
      * @param language 识别语言，默认中文
      */
     fun startListening(language: String = "zh-CN") {
+        Logger.i("=== VoiceRecognizer.startListening() ===", TAG)
+        
         if (speechRecognizer == null) {
-            Logger.e("SpeechRecognizer not initialized", TAG)
+            Logger.w("SpeechRecognizer not initialized, initializing now", TAG)
             initialize()
         }
         
         if (isListening) {
-            Logger.w("Already listening", TAG)
+            Logger.w("Already listening, ignoring", TAG)
+            return
+        }
+        
+        // 检查语音识别是否可用
+        if (!isRecognitionAvailable(context)) {
+            Logger.e("Speech recognition not available on this device!", TAG)
+            callback?.onError(-1, "此设备不支持语音识别，请安装Google应用")
             return
         }
         
@@ -190,16 +209,16 @@ class VoiceRecognizer(private val context: Context) {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, language)
             putExtra(RecognizerIntent.EXTRA_ONLY_RETURN_LANGUAGE_PREFERENCE, language)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-            // 静音检测
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 3000L)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1500L)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1000L)
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
+            // 延长静音检测时间，让用户有更多时间说话
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 5000L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 3000L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 2000L)
         }
         
         try {
             speechRecognizer?.startListening(intent)
-            Logger.i("Started listening", TAG)
+            Logger.i("=== Native STT started listening ===", TAG)
         } catch (e: Exception) {
             Logger.e("Failed to start listening", e, TAG)
             updateState(RecognitionState.ERROR)
