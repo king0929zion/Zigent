@@ -150,12 +150,14 @@ class FloatingInteractionController(
                 startVoiceInput()
             }
             InteractionPhase.VOICE_INPUT -> {
-                // 语音输入中 -> 结束语音输入
-                stopVoiceInput()
+                // 语音输入中 -> 结束语音输入并处理结果
+                finishVoiceInput()
             }
             InteractionPhase.AI_PROCESSING, InteractionPhase.TASK_EXECUTING -> {
-                // 处理中/执行中 -> 可以考虑添加取消功能
-                Logger.d("Task in progress, click ignored", TAG)
+                // 处理中/执行中 -> 取消任务
+                Logger.d("Cancelling task", TAG)
+                voiceManager.speak("正在取消任务")
+                cancel()
             }
             InteractionPhase.COMPLETED, InteractionPhase.ERROR -> {
                 // 完成/错误 -> 重置为空闲
@@ -186,6 +188,45 @@ class FloatingInteractionController(
     fun stopVoiceInput() {
         Logger.i("Stopping voice input", TAG)
         voiceManager.stopListening()
+    }
+    
+    /**
+     * 完成语音输入并处理结果
+     * 用户再次点击悬浮球时调用
+     */
+    private fun finishVoiceInput() {
+        Logger.i("Finishing voice input", TAG)
+        
+        // 先停止TTS（如果还在播报提示语）
+        if (voiceManager.isSpeaking()) {
+            voiceManager.stopSpeaking()
+        }
+        
+        // 获取当前已识别的文本
+        val currentText = _recognizedText.value.ifBlank { 
+            voiceManager.lastRecognizedText.value 
+        }
+        
+        // 取消语音识别
+        voiceManager.cancelListening()
+        
+        if (currentText.isNotBlank()) {
+            // 有识别到文本，直接处理
+            Logger.i("Processing recognized text: $currentText", TAG)
+            callback?.onVoiceResult(currentText)
+            startAiProcessing(currentText)
+        } else {
+            // 没有识别到文本
+            Logger.w("No text recognized", TAG)
+            _phase.value = InteractionPhase.ERROR
+            callback?.onError("没有检测到语音")
+            voiceManager.speak("没有检测到语音，请重试") {
+                scope.launch {
+                    delay(1000)
+                    reset()
+                }
+            }
+        }
     }
 
     /**
