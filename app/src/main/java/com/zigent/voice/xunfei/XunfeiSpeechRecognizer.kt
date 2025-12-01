@@ -156,37 +156,49 @@ class XunfeiSpeechRecognizer(private val context: Context) {
     
     /**
      * 生成鉴权URL
+     * 基于讯飞中英识别大模型文档的鉴权方式
+     * https://www.xfyun.cn/doc/spark/spark_zh_iat.html#四、接口鉴权
      */
     private fun generateAuthUrl(): String {
+        // 生成RFC1123格式的GMT时间戳
         val dateFormat = SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss z", Locale.US)
         dateFormat.timeZone = TimeZone.getTimeZone("GMT")
         val date = dateFormat.format(Date())
         
-        // 解析host
-        val url = java.net.URL(XunfeiConfig.IAT_HOST_URL.replace("wss://", "https://"))
-        val host = url.host
-        val path = url.path
+        val host = XunfeiConfig.IAT_HOST
+        val path = XunfeiConfig.IAT_PATH
         
-        // 构建签名原文
+        // 构建签名原文: host date request-line
+        // request-line格式: GET /v1 HTTP/1.1
         val signatureOrigin = "host: $host\ndate: $date\nGET $path HTTP/1.1"
         
-        // HMAC-SHA256签名
+        Logger.d("Signature origin:\n$signatureOrigin", TAG)
+        
+        // 使用HMAC-SHA256计算签名
         val mac = Mac.getInstance("HmacSHA256")
         val secretKey = SecretKeySpec(XunfeiConfig.API_SECRET.toByteArray(StandardCharsets.UTF_8), "HmacSHA256")
         mac.init(secretKey)
         val signatureSha = mac.doFinal(signatureOrigin.toByteArray(StandardCharsets.UTF_8))
         val signature = Base64.encodeToString(signatureSha, Base64.NO_WRAP)
         
-        // 构建authorization
-        val authorizationOrigin = "api_key=\"${XunfeiConfig.API_KEY}\", algorithm=\"hmac-sha256\", headers=\"host date request-line\", signature=\"$signature\""
+        // 构建authorization_origin
+        // 格式: api_key="$api_key",algorithm="hmac-sha256",headers="host date request-line",signature="$signature"
+        val authorizationOrigin = "api_key=\"${XunfeiConfig.API_KEY}\",algorithm=\"hmac-sha256\",headers=\"host date request-line\",signature=\"$signature\""
+        
+        // Base64编码authorization
         val authorization = Base64.encodeToString(authorizationOrigin.toByteArray(StandardCharsets.UTF_8), Base64.NO_WRAP)
         
-        // 构建最终URL
+        // URL编码各参数
         val encodedDate = URLEncoder.encode(date, "UTF-8")
         val encodedHost = URLEncoder.encode(host, "UTF-8")
         val encodedAuthorization = URLEncoder.encode(authorization, "UTF-8")
         
-        return "${XunfeiConfig.IAT_HOST_URL}?authorization=$encodedAuthorization&date=$encodedDate&host=$encodedHost"
+        // 构建最终鉴权URL
+        val authUrl = "${XunfeiConfig.IAT_HOST_URL}?authorization=$encodedAuthorization&date=$encodedDate&host=$encodedHost"
+        
+        Logger.d("Auth URL: $authUrl", TAG)
+        
+        return authUrl
     }
     
     /**
@@ -297,35 +309,40 @@ class XunfeiSpeechRecognizer(private val context: Context) {
     
     /**
      * 发送音频帧
+     * 根据讯飞文档构建请求参数
      */
     private fun sendFrame(audioData: ByteArray, status: Int) {
         val frame = JsonObject().apply {
-            // common参数（仅首帧）
+            // common参数（仅首帧需要）
             if (status == STATUS_FIRST_FRAME) {
                 add("common", JsonObject().apply {
                     addProperty("app_id", XunfeiConfig.APPID)
                 })
                 
+                // business参数（仅首帧需要）
                 add("business", JsonObject().apply {
-                    addProperty("language", XunfeiConfig.LANGUAGE)
-                    addProperty("domain", XunfeiConfig.DOMAIN)
-                    addProperty("accent", XunfeiConfig.ACCENT)
-                    addProperty("vad_eos", XunfeiConfig.VAD_EOS)
-                    addProperty("dwa", XunfeiConfig.DWA)
-                    addProperty("ptt", XunfeiConfig.PTT)
-                    addProperty("nunum", XunfeiConfig.NUF)
+                    addProperty("language", XunfeiConfig.LANGUAGE)  // 语种：zh_cn
+                    addProperty("domain", XunfeiConfig.DOMAIN)      // 领域：iat
+                    addProperty("accent", XunfeiConfig.ACCENT)      // 方言：mandarin
+                    addProperty("vad_eos", XunfeiConfig.VAD_EOS)    // 静音检测
+                    addProperty("dwa", XunfeiConfig.DWA)            // 动态修正：wpgs
+                    addProperty("ptt", XunfeiConfig.PTT)            // 标点：1
+                    addProperty("nunum", XunfeiConfig.NUF)          // 数字格式：1
                 })
             }
             
+            // data参数（每帧都需要）
             add("data", JsonObject().apply {
-                addProperty("status", status)
-                addProperty("format", XunfeiConfig.AUDIO_ENCODING)
-                addProperty("encoding", XunfeiConfig.AUDIO_ENCODING)
+                addProperty("status", status)  // 0-首帧, 1-中间帧, 2-尾帧
+                addProperty("format", "audio/L16;rate=16000")  // 音频格式
+                addProperty("encoding", "raw")  // 编码：raw(pcm)
                 addProperty("audio", Base64.encodeToString(audioData, Base64.NO_WRAP))
             })
         }
         
-        webSocket?.send(gson.toJson(frame))
+        val jsonStr = gson.toJson(frame)
+        Logger.d("Sending frame, status=$status, size=${audioData.size}", TAG)
+        webSocket?.send(jsonStr)
     }
     
     /**
@@ -334,15 +351,16 @@ class XunfeiSpeechRecognizer(private val context: Context) {
     private fun sendEndFrame() {
         val frame = JsonObject().apply {
             add("data", JsonObject().apply {
-                addProperty("status", STATUS_LAST_FRAME)
-                addProperty("format", XunfeiConfig.AUDIO_ENCODING)
-                addProperty("encoding", XunfeiConfig.AUDIO_ENCODING)
-                addProperty("audio", "")
+                addProperty("status", STATUS_LAST_FRAME)  // 2-尾帧
+                addProperty("format", "audio/L16;rate=16000")
+                addProperty("encoding", "raw")
+                addProperty("audio", "")  // 尾帧音频可以为空
             })
         }
         
-        webSocket?.send(gson.toJson(frame))
-        Logger.d("Sent end frame", TAG)
+        val jsonStr = gson.toJson(frame)
+        Logger.d("Sending end frame: $jsonStr", TAG)
+        webSocket?.send(jsonStr)
     }
     
     /**
@@ -372,9 +390,12 @@ class XunfeiSpeechRecognizer(private val context: Context) {
     
     /**
      * 处理服务器响应
+     * 响应格式参考讯飞文档
      */
     private fun handleResponse(text: String) {
         try {
+            Logger.d("Received response: $text", TAG)
+            
             val response = gson.fromJson(text, JsonObject::class.java)
             val code = response.get("code")?.asInt ?: -1
             
@@ -397,6 +418,7 @@ class XunfeiSpeechRecognizer(private val context: Context) {
                 val ws = result.getAsJsonArray("ws")
                 val sb = StringBuilder()
                 
+                // 遍历ws数组，提取识别文字
                 ws?.forEach { wsItem ->
                     val cw = wsItem.asJsonObject.getAsJsonArray("cw")
                     cw?.forEach { cwItem ->
@@ -407,21 +429,33 @@ class XunfeiSpeechRecognizer(private val context: Context) {
                 
                 val partialText = sb.toString()
                 if (partialText.isNotEmpty()) {
-                    // 检查是否是最终结果（pgs字段）
+                    // 检查pgs字段（动态修正）
                     val pgs = result.get("pgs")?.asString
+                    
                     if (pgs == "rpl") {
-                        // 替换之前的结果
-                        val rg = result.getAsJsonArray("rg")
-                        // 简化处理：直接更新
+                        // rpl表示替换，需要根据rg范围替换之前的结果
+                        // 简化处理：清空之前的结果，使用新结果
+                        val sn = result.get("sn")?.asInt ?: 0
+                        Logger.d("Replace mode, sn=$sn, text=$partialText", TAG)
+                        // 对于实时显示，直接使用当前帧的结果
+                    } else if (pgs == "apd") {
+                        // apd表示追加
+                        Logger.d("Append mode, text=$partialText", TAG)
                     }
                     
-                    resultBuilder.append(partialText)
-                    callback?.onPartialResult(resultBuilder.toString())
-                    Logger.d("Partial: $partialText, Total: ${resultBuilder}", TAG)
+                    // 更新结果（简化处理：直接累加）
+                    if (pgs != "rpl") {
+                        resultBuilder.append(partialText)
+                    }
+                    
+                    // 回调部分结果
+                    val currentResult = if (pgs == "rpl") partialText else resultBuilder.toString()
+                    callback?.onPartialResult(currentResult)
+                    Logger.d("Partial result: $currentResult", TAG)
                 }
             }
             
-            // 检查是否是最后一帧响应
+            // 检查是否是最后一帧响应（status=2表示结束）
             if (status == 2) {
                 val finalResult = resultBuilder.toString()
                 Logger.i("Final result: $finalResult", TAG)

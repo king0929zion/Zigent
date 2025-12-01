@@ -2,10 +2,13 @@ package com.zigent.voice.xunfei
 
 /**
  * 讯飞语音服务配置
+ * 基于中英识别大模型 API 文档: https://www.xfyun.cn/doc/spark/spark_zh_iat.html
  */
 object XunfeiConfig {
-    // 实时语音转写API地址
-    const val IAT_HOST_URL = "wss://iat-api.xfyun.cn/v2/iat"
+    // 中英识别大模型API地址（新版）
+    const val IAT_HOST_URL = "wss://iat.xf-yun.com/v1"
+    const val IAT_HOST = "iat.xf-yun.com"
+    const val IAT_PATH = "/v1"
     
     // 默认配置（用户可在设置中修改）
     var APPID = "b66b84d7"
@@ -14,9 +17,9 @@ object XunfeiConfig {
     
     // 音频参数
     const val AUDIO_FORMAT = "audio/L16;rate=16000"
-    const val AUDIO_ENCODING = "raw"
+    const val AUDIO_ENCODING = "raw"  // pcm格式
     const val SAMPLE_RATE = 16000
-    const val FRAME_SIZE = 1280 // 每帧音频大小（40ms）
+    const val FRAME_SIZE = 1280 // 每帧音频大小（40ms, 16000*16bit*0.04s/8=1280字节）
     
     // 语言设置
     const val LANGUAGE = "zh_cn" // 中文
@@ -25,11 +28,9 @@ object XunfeiConfig {
     
     // 其他设置
     const val VAD_EOS = 3000 // 静音检测时长（毫秒）
-    const val DWA = "wpgs" // 动态修正
-    const val PD = "game" // 领域个性化
-    const val PTT = 1 // 标点符号
-    const val RLT_FMT = "plain" // 返回格式
-    const val NUF = 1 // 数字格式
+    const val DWA = "wpgs" // 动态修正（开启流式结果返回）
+    const val PTT = 1 // 标点符号（1-返回标点）
+    const val NUF = 1 // 数字格式（1-按数值格式输出）
     
     /**
      * 配置API凭证
