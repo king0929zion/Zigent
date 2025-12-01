@@ -8,6 +8,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -100,7 +101,7 @@ class MainActivity : ComponentActivity() {
         
         // 加载保存的AI设置
         lifecycleScope.launch {
-            settingsRepository.getAiSettings().collect { settings ->
+            settingsRepository.aiSettingsFlow.collect { settings ->
                 currentAiSettings = settings
                 // 配置AgentEngine
                 if (settings.apiKey.isNotBlank()) {
