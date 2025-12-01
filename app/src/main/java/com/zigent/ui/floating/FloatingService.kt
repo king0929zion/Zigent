@@ -91,6 +91,9 @@ class FloatingService : Service() {
     // 悬浮球视图
     private var floatingBallView: FloatingBallView? = null
     
+    // 悬浮文字面板
+    private var textPanel: FloatingTextPanel? = null
+    
     // 当前状态
     private var currentState: FloatingBallState = FloatingBallState.IDLE
     
@@ -252,26 +255,72 @@ class FloatingService : Service() {
                     InteractionPhase.ERROR -> FloatingBallState.ERROR
                 }
                 updateFloatingBallState(ballState)
+                
+                // 更新文字面板状态
+                serviceScope.launch(Dispatchers.Main) {
+                    when (phase) {
+                        InteractionPhase.IDLE -> {
+                            hideTextPanel()
+                        }
+                        InteractionPhase.VOICE_INPUT -> {
+                            showTextPanel()
+                            textPanel?.setListeningMode()
+                        }
+                        InteractionPhase.AI_PROCESSING -> {
+                            textPanel?.setProcessingMode()
+                        }
+                        InteractionPhase.TASK_EXECUTING -> {
+                            textPanel?.setExecutingMode()
+                        }
+                        InteractionPhase.COMPLETED -> {
+                            // 面板保持显示完成状态一段时间
+                        }
+                        InteractionPhase.ERROR -> {
+                            // 面板保持显示错误状态一段时间
+                        }
+                    }
+                }
             }
 
             override fun onVoiceResult(text: String) {
                 Logger.d("Voice result: $text", TAG)
+                serviceScope.launch(Dispatchers.Main) {
+                    textPanel?.updateText(text)
+                }
             }
 
             override fun onAiResponse(response: String) {
                 Logger.d("AI response: $response", TAG)
+                serviceScope.launch(Dispatchers.Main) {
+                    textPanel?.updateText(response)
+                }
             }
 
             override fun onTaskProgress(progress: String) {
                 Logger.d("Task progress: $progress", TAG)
+                serviceScope.launch(Dispatchers.Main) {
+                    textPanel?.updateText(progress)
+                }
             }
 
             override fun onTaskCompleted(result: String) {
                 Logger.d("Task completed: $result", TAG)
+                serviceScope.launch(Dispatchers.Main) {
+                    textPanel?.setCompletedMode(result)
+                    // 延迟隐藏面板
+                    delay(3000)
+                    hideTextPanel()
+                }
             }
 
             override fun onError(message: String) {
                 Logger.e("Interaction error: $message", null, TAG)
+                serviceScope.launch(Dispatchers.Main) {
+                    textPanel?.setErrorMode(message)
+                    // 延迟隐藏面板
+                    delay(3000)
+                    hideTextPanel()
+                }
             }
         }
     }
@@ -362,6 +411,53 @@ class FloatingService : Service() {
             }
         }
         floatingBallView = null
+        
+        // 同时隐藏文字面板
+        hideTextPanel()
+    }
+    
+    /**
+     * 显示文字面板
+     */
+    private fun showTextPanel() {
+        if (textPanel != null) return
+        
+        try {
+            textPanel = FloatingTextPanel(this).apply {
+                val params = createLayoutParams()
+                attachToWindow(windowManager)
+                windowManager.addView(this, params)
+                show()
+            }
+            Logger.d("Text panel shown", TAG)
+        } catch (e: Exception) {
+            Logger.e("Failed to show text panel", e, TAG)
+        }
+    }
+    
+    /**
+     * 隐藏文字面板
+     */
+    private fun hideTextPanel() {
+        textPanel?.let { panel ->
+            try {
+                panel.hide()
+                // 延迟移除视图，让动画完成
+                serviceScope.launch(Dispatchers.Main) {
+                    delay(300)
+                    try {
+                        panel.release()
+                        windowManager.removeView(panel)
+                    } catch (e: Exception) {
+                        Logger.e("Failed to remove text panel", e, TAG)
+                    }
+                }
+                Logger.d("Text panel hidden", TAG)
+            } catch (e: Exception) {
+                Logger.e("Failed to hide text panel", e, TAG)
+            }
+        }
+        textPanel = null
     }
 
     /**

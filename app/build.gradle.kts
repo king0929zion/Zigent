@@ -67,6 +67,10 @@ dependencies {
     // Material Design
     implementation("com.google.android.material:material:1.11.0")
     
+    // Shizuku - ADB 权限
+    implementation("dev.rikka.shizuku:api:13.1.5")
+    implementation("dev.rikka.shizuku:provider:13.1.5")
+    
     // Jetpack Compose
     implementation(platform("androidx.compose:compose-bom:2023.10.01"))
     implementation("androidx.compose.ui:ui")

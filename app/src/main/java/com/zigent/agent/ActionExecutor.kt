@@ -11,6 +11,7 @@ import com.zigent.agent.models.ActionType
 import com.zigent.agent.models.AgentAction
 import com.zigent.agent.models.ScrollDirection
 import com.zigent.ai.AiConfig
+import com.zigent.shizuku.ShizukuManager
 import com.zigent.utils.Logger
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -36,6 +37,8 @@ data class ExecutionResult(
 /**
  * 操作执行器
  * 负责执行Agent决策的各种操作
+ * 
+ * 执行优先级: 无障碍服务 > Shizuku > ADB
  */
 @Singleton
 class ActionExecutor @Inject constructor(
@@ -50,6 +53,11 @@ class ActionExecutor @Inject constructor(
         private const val DEFAULT_SCREEN_HEIGHT = 2400
     }
     
+    // Shizuku 管理器
+    private val shizukuManager: ShizukuManager by lazy { 
+        ShizukuManager.getInstance(context) 
+    }
+    
     // 缓存屏幕尺寸
     private var screenWidth = DEFAULT_SCREEN_WIDTH
     private var screenHeight = DEFAULT_SCREEN_HEIGHT
@@ -57,6 +65,8 @@ class ActionExecutor @Inject constructor(
     init {
         // 初始化时获取屏幕尺寸
         updateScreenSize()
+        // 初始化 Shizuku
+        shizukuManager.initialize()
     }
     
     private fun updateScreenSize() {
@@ -64,6 +74,23 @@ class ActionExecutor @Inject constructor(
         screenWidth = displayMetrics.widthPixels
         screenHeight = displayMetrics.heightPixels
         Logger.d("Screen size: ${screenWidth}x${screenHeight}", TAG)
+    }
+    
+    /**
+     * 检查可用的执行方式
+     */
+    fun getAvailableExecutors(): List<String> {
+        val executors = mutableListOf<String>()
+        if (ZigentAccessibilityService.isServiceAvailable()) {
+            executors.add("Accessibility")
+        }
+        if (shizukuManager.isAvailable()) {
+            executors.add("Shizuku")
+        }
+        if (adbManager.isConnected()) {
+            executors.add("ADB")
+        }
+        return executors
     }
 
     /**
@@ -150,12 +177,13 @@ class ActionExecutor @Inject constructor(
 
     /**
      * 执行点击
+     * 优先级: 无障碍 > Shizuku > ADB
      */
     private suspend fun executeTap(action: AgentAction): ExecutionResult {
         val x = action.x ?: return ExecutionResult(false, errorMessage = "缺少坐标X")
         val y = action.y ?: return ExecutionResult(false, errorMessage = "缺少坐标Y")
         
-        // 优先使用无障碍服务
+        // 1. 优先使用无障碍服务
         ZigentAccessibilityService.instance?.let { service ->
             val success = suspendCancellableCoroutine { cont ->
                 service.performClick(x.toFloat(), y.toFloat()) { result ->
@@ -163,16 +191,27 @@ class ActionExecutor @Inject constructor(
                 }
             }
             if (success) {
+                Logger.d("Tap via Accessibility: ($x, $y)", TAG)
                 return ExecutionResult(true, "点击 ($x, $y)")
             }
         }
         
-        // 备选：使用ADB
+        // 2. 使用 Shizuku
+        if (shizukuManager.isAvailable()) {
+            val success = shizukuManager.tap(x, y)
+            if (success) {
+                Logger.d("Tap via Shizuku: ($x, $y)", TAG)
+                return ExecutionResult(true, "点击 ($x, $y)")
+            }
+        }
+        
+        // 3. 备选：使用 ADB
         val success = adbManager.tap(x, y)
         return if (success) {
+            Logger.d("Tap via ADB: ($x, $y)", TAG)
             ExecutionResult(true, "点击 ($x, $y)")
         } else {
-            ExecutionResult(false, errorMessage = "点击失败")
+            ExecutionResult(false, errorMessage = "点击失败 (无可用执行方式)")
         }
     }
 
@@ -199,13 +238,14 @@ class ActionExecutor @Inject constructor(
 
     /**
      * 执行长按
+     * 优先级: 无障碍 > Shizuku > ADB
      */
     private suspend fun executeLongPress(action: AgentAction): ExecutionResult {
         val x = action.x ?: return ExecutionResult(false, errorMessage = "缺少坐标X")
         val y = action.y ?: return ExecutionResult(false, errorMessage = "缺少坐标Y")
         val duration = action.duration ?: 800
         
-        // 优先使用无障碍服务
+        // 1. 优先使用无障碍服务
         ZigentAccessibilityService.instance?.let { service ->
             val success = suspendCancellableCoroutine { cont ->
                 service.performLongClick(x.toFloat(), y.toFloat(), duration.toLong()) { result ->
@@ -213,13 +253,24 @@ class ActionExecutor @Inject constructor(
                 }
             }
             if (success) {
+                Logger.d("Long press via Accessibility: ($x, $y)", TAG)
                 return ExecutionResult(true, "长按 ($x, $y) ${duration}ms")
             }
         }
         
-        // 备选：使用ADB
+        // 2. 使用 Shizuku
+        if (shizukuManager.isAvailable()) {
+            val success = shizukuManager.longPress(x, y, duration)
+            if (success) {
+                Logger.d("Long press via Shizuku: ($x, $y)", TAG)
+                return ExecutionResult(true, "长按 ($x, $y) ${duration}ms")
+            }
+        }
+        
+        // 3. 备选：使用 ADB
         val success = adbManager.longPress(x, y, duration)
         return if (success) {
+            Logger.d("Long press via ADB: ($x, $y)", TAG)
             ExecutionResult(true, "长按 ($x, $y) ${duration}ms")
         } else {
             ExecutionResult(false, errorMessage = "长按失败")
@@ -339,19 +390,31 @@ class ActionExecutor @Inject constructor(
 
     /**
      * 执行输入文本
+     * Shizuku/ADB 比无障碍更可靠
      */
     private suspend fun executeInputText(action: AgentAction): ExecutionResult {
         val text = action.text ?: return ExecutionResult(false, errorMessage = "缺少输入文本")
         
-        // 如果提供了坐标，先点击
+        // 如果提供了坐标，先点击聚焦
         if (action.x != null && action.y != null) {
             val tapResult = executeTap(action)
             if (!tapResult.success) return tapResult
             delay(300)
         }
         
+        // 1. 优先使用 Shizuku（支持中文输入）
+        if (shizukuManager.isAvailable()) {
+            val success = shizukuManager.inputText(text)
+            if (success) {
+                Logger.d("Input via Shizuku: $text", TAG)
+                return ExecutionResult(true, "输入: $text")
+            }
+        }
+        
+        // 2. 使用 ADB
         val success = adbManager.inputText(text)
         return if (success) {
+            Logger.d("Input via ADB: $text", TAG)
             ExecutionResult(true, "输入: $text")
         } else {
             ExecutionResult(false, errorMessage = "输入失败")
@@ -373,12 +436,13 @@ class ActionExecutor @Inject constructor(
 
     /**
      * 执行按键
+     * 优先级: 无障碍 > Shizuku > ADB
      */
     private suspend fun executePressKey(action: AgentAction): ExecutionResult {
         val keyCode = action.keyCode ?: action.keyName?.let { parseKeyName(it) }
             ?: return ExecutionResult(false, errorMessage = "缺少按键码")
         
-        // 优先使用无障碍服务的全局操作
+        // 1. 优先使用无障碍服务的全局操作
         ZigentAccessibilityService.instance?.let { service ->
             val success = when (keyCode) {
                 AdbCommands.KeyCodes.BACK -> service.performBack()
@@ -387,13 +451,24 @@ class ActionExecutor @Inject constructor(
                 else -> false
             }
             if (success) {
+                Logger.d("Key via Accessibility: $keyCode", TAG)
                 return ExecutionResult(true, "按键: $keyCode")
             }
         }
         
-        // 备选：使用ADB
+        // 2. 使用 Shizuku
+        if (shizukuManager.isAvailable()) {
+            val success = shizukuManager.pressKey(keyCode)
+            if (success) {
+                Logger.d("Key via Shizuku: $keyCode", TAG)
+                return ExecutionResult(true, "按键: $keyCode")
+            }
+        }
+        
+        // 3. 备选：使用 ADB
         val success = adbManager.pressKey(keyCode)
         return if (success) {
+            Logger.d("Key via ADB: $keyCode", TAG)
             ExecutionResult(true, "按键: $keyCode")
         } else {
             ExecutionResult(false, errorMessage = "按键失败")
@@ -638,6 +713,7 @@ class ActionExecutor @Inject constructor(
 
     /**
      * 执行滑动操作
+     * 优先级: 无障碍 > Shizuku > ADB
      */
     private suspend fun performSwipe(
         startX: Int, startY: Int,
@@ -645,7 +721,7 @@ class ActionExecutor @Inject constructor(
         duration: Int,
         description: String
     ): ExecutionResult {
-        // 优先使用无障碍服务
+        // 1. 优先使用无障碍服务
         ZigentAccessibilityService.instance?.let { service ->
             val success = suspendCancellableCoroutine { cont ->
                 service.performSwipe(
@@ -657,16 +733,61 @@ class ActionExecutor @Inject constructor(
                 }
             }
             if (success) {
+                Logger.d("Swipe via Accessibility: $description", TAG)
                 return ExecutionResult(true, description)
             }
         }
         
-        // 备选：使用ADB
+        // 2. 使用 Shizuku
+        if (shizukuManager.isAvailable()) {
+            val success = shizukuManager.swipe(startX, startY, endX, endY, duration)
+            if (success) {
+                Logger.d("Swipe via Shizuku: $description", TAG)
+                return ExecutionResult(true, description)
+            }
+        }
+        
+        // 3. 备选：使用 ADB
         val success = adbManager.swipe(startX, startY, endX, endY, duration)
         return if (success) {
+            Logger.d("Swipe via ADB: $description", TAG)
             ExecutionResult(true, description)
         } else {
             ExecutionResult(false, errorMessage = "${description}失败")
         }
+    }
+    
+    /**
+     * 获取截图 Base64（Shizuku 专用功能）
+     */
+    suspend fun takeScreenshotBase64(): String? {
+        // 优先使用 Shizuku
+        if (shizukuManager.isAvailable()) {
+            val result = shizukuManager.takeScreenshotBase64()
+            if (result != null) {
+                Logger.d("Screenshot via Shizuku", TAG)
+                return result
+            }
+        }
+        
+        // 备选：使用 ADB
+        return adbManager.takeScreenshotBase64()
+    }
+    
+    /**
+     * 导出 UI 层级（Shizuku 专用功能）
+     */
+    suspend fun dumpUiHierarchy(): String? {
+        // 优先使用 Shizuku
+        if (shizukuManager.isAvailable()) {
+            val result = shizukuManager.dumpUiHierarchy()
+            if (result != null) {
+                Logger.d("UI dump via Shizuku", TAG)
+                return result
+            }
+        }
+        
+        // 备选：使用 ADB
+        return adbManager.dumpUiHierarchy()
     }
 }
