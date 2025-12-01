@@ -238,43 +238,16 @@ class FloatingInteractionController(
         Logger.d("Voice result received: success=${result.success}, text='${result.text}', error='${result.errorMessage}'", TAG)
         
         if (result.success && result.text.isNotBlank()) {
-            // 更新识别文本
+            // 只更新识别文本，不自动触发AI处理
             _recognizedText.value = result.text
             callback?.onVoiceResult(result.text)
-            Logger.i("Voice recognized: ${result.text}", TAG)
+            Logger.i("Voice recognized (waiting for user to finish): ${result.text}", TAG)
             
-            // 检查当前阶段，如果还在语音输入阶段，说明识别自动结束了
-            // 此时自动进入AI处理
-            if (_phase.value == InteractionPhase.VOICE_INPUT) {
-                Logger.i("Auto-triggering AI processing after voice recognition completed", TAG)
-                startAiProcessing(result.text)
-            }
+            // 不自动触发AI处理！等待用户点击悬浮球
         } else if (result.errorMessage.isNotBlank()) {
-            // 识别出错
+            // 识别出错，记录日志但不自动处理
             Logger.w("Voice recognition error: ${result.errorMessage}", TAG)
-            
-            // 只有在严重错误时才显示错误状态
-            if (_phase.value == InteractionPhase.VOICE_INPUT) {
-                // 如果已经有识别到的文本，使用已有文本
-                val existingText = _recognizedText.value.ifBlank { 
-                    voiceManager.lastRecognizedText.value 
-                }
-                
-                if (existingText.isNotBlank()) {
-                    Logger.i("Using existing recognized text: $existingText", TAG)
-                    startAiProcessing(existingText)
-                } else {
-                    // 真的没有识别到任何内容
-                    _phase.value = InteractionPhase.ERROR
-                    callback?.onError("没有检测到语音，请重试")
-                    voiceManager.speak("没有检测到语音，请点击悬浮球重试")
-                    
-                    scope.launch {
-                        delay(2000)
-                        reset()
-                    }
-                }
-            }
+            // 不自动处理错误，让用户可以继续尝试或点击悬浮球结束
         }
     }
 
