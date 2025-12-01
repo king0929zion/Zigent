@@ -14,11 +14,13 @@ import com.zigent.adb.AdbManager
 import com.zigent.agent.ActionExecutor
 import com.zigent.agent.AgentEngine
 import com.zigent.agent.ScreenAnalyzer
+import com.zigent.data.SettingsRepository
 import com.zigent.ui.MainActivity
 import com.zigent.utils.Logger
 import com.zigent.utils.PermissionHelper
 import com.zigent.voice.VoiceManager
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.first
 
 /**
  * 悬浮球前台服务
@@ -101,6 +103,7 @@ class FloatingService : Service() {
     private lateinit var screenAnalyzer: ScreenAnalyzer
     private lateinit var actionExecutor: ActionExecutor
     private lateinit var agentEngine: AgentEngine
+    private lateinit var settingsRepository: SettingsRepository
     
     // 交互控制器
     private var interactionController: FloatingInteractionController? = null
@@ -120,6 +123,9 @@ class FloatingService : Service() {
      * 初始化所有依赖组件
      */
     private fun initializeDependencies() {
+        // 初始化设置仓库
+        settingsRepository = SettingsRepository(this)
+        
         // 初始化语音管理器
         voiceManager = VoiceManager(this)
         
@@ -138,6 +144,29 @@ class FloatingService : Service() {
         // 初始化交互控制器
         interactionController = FloatingInteractionController(this, voiceManager, agentEngine).apply {
             callback = createInteractionCallback()
+        }
+        
+        // 加载已保存的AI设置
+        loadAiSettings()
+    }
+    
+    /**
+     * 从存储中加载AI设置并配置AgentEngine
+     */
+    private fun loadAiSettings() {
+        serviceScope.launch {
+            try {
+                val settings = settingsRepository.aiSettingsFlow.first()
+                if (settings.apiKey.isNotBlank()) {
+                    agentEngine.configureAi(settings)
+                    interactionController?.configureAi(settings)
+                    Logger.i("AI settings loaded: ${settings.provider}", TAG)
+                } else {
+                    Logger.w("No API key configured", TAG)
+                }
+            } catch (e: Exception) {
+                Logger.e("Failed to load AI settings", e, TAG)
+            }
         }
     }
 
@@ -190,7 +219,7 @@ class FloatingService : Service() {
             if (success) {
                 Logger.i("Voice service initialized", TAG)
             } else {
-                Logger.e("Failed to initialize voice service", TAG)
+                Logger.e("Failed to initialize voice service", null, TAG)
             }
         }
     }
@@ -230,7 +259,7 @@ class FloatingService : Service() {
             }
 
             override fun onError(message: String) {
-                Logger.e("Interaction error: $message", TAG)
+                Logger.e("Interaction error: $message", null, TAG)
             }
         }
     }
