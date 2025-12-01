@@ -32,13 +32,20 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import com.zigent.ai.AiConfig
+import com.zigent.ai.AiProvider
+import com.zigent.ai.AiSettings
+import com.zigent.agent.AgentEngine
+import com.zigent.data.SettingsRepository
 import com.zigent.ui.floating.FloatingService
+import com.zigent.ui.settings.SettingsScreen
 import com.zigent.ui.theme.ZigentTheme
 import com.zigent.utils.Logger
 import com.zigent.utils.PermissionHelper
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import javax.inject.Inject
 
 /**
  * 主界面Activity
@@ -50,6 +57,12 @@ class MainActivity : ComponentActivity() {
     companion object {
         private const val TAG = "MainActivity"
     }
+    
+    @Inject
+    lateinit var settingsRepository: SettingsRepository
+    
+    @Inject
+    lateinit var agentEngine: AgentEngine
 
     // 权限状态
     private var hasOverlayPermission by mutableStateOf(false)
@@ -58,6 +71,21 @@ class MainActivity : ComponentActivity() {
     
     // 服务状态
     private var isServiceRunning by mutableStateOf(false)
+    
+    // UI导航状态
+    private var showSettings by mutableStateOf(false)
+    
+    // AI设置状态
+    private var currentAiSettings by mutableStateOf(
+        AiSettings(
+            provider = AiProvider.SILICONFLOW,
+            apiKey = "",
+            baseUrl = AiConfig.SILICONFLOW_BASE_URL,
+            model = AiConfig.SILICONFLOW_MODEL
+        )
+    )
+    private var isTestingConnection by mutableStateOf(false)
+    private var testResult by mutableStateOf<String?>(null)
 
     // 麦克风权限请求
     private val microphonePermissionLauncher = registerForActivityResult(
@@ -69,6 +97,17 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        // 加载保存的AI设置
+        lifecycleScope.launch {
+            settingsRepository.getAiSettings().collect { settings ->
+                currentAiSettings = settings
+                // 配置AgentEngine
+                if (settings.apiKey.isNotBlank()) {
+                    agentEngine.configureAi(settings)
+                }
+            }
+        }
         
         // 定期刷新权限状态
         lifecycleScope.launch {
@@ -82,16 +121,32 @@ class MainActivity : ComponentActivity() {
         
         setContent {
             ZigentTheme {
-                MainScreen(
-                    hasOverlayPermission = hasOverlayPermission,
-                    hasAccessibilityPermission = hasAccessibilityPermission,
-                    hasMicrophonePermission = hasMicrophonePermission,
-                    isServiceRunning = isServiceRunning,
-                    onRequestOverlayPermission = { requestOverlayPermission() },
-                    onRequestAccessibilityPermission = { requestAccessibilityPermission() },
-                    onRequestMicrophonePermission = { requestMicrophonePermission() },
-                    onToggleService = { toggleService() }
-                )
+                if (showSettings) {
+                    SettingsScreen(
+                        currentSettings = currentAiSettings,
+                        onSaveSettings = { settings -> saveAiSettings(settings) },
+                        onTestConnection = { testAiConnection() },
+                        isTestingConnection = isTestingConnection,
+                        testResult = testResult,
+                        onBack = { 
+                            showSettings = false 
+                            testResult = null
+                        }
+                    )
+                } else {
+                    MainScreen(
+                        hasOverlayPermission = hasOverlayPermission,
+                        hasAccessibilityPermission = hasAccessibilityPermission,
+                        hasMicrophonePermission = hasMicrophonePermission,
+                        isServiceRunning = isServiceRunning,
+                        isAiConfigured = currentAiSettings.apiKey.isNotBlank(),
+                        onRequestOverlayPermission = { requestOverlayPermission() },
+                        onRequestAccessibilityPermission = { requestAccessibilityPermission() },
+                        onRequestMicrophonePermission = { requestMicrophonePermission() },
+                        onToggleService = { toggleService() },
+                        onOpenSettings = { showSettings = true }
+                    )
+                }
             }
         }
     }
@@ -151,6 +206,38 @@ class MainActivity : ComponentActivity() {
             refreshPermissionStatus()
         }
     }
+    
+    /**
+     * 保存AI设置
+     */
+    private fun saveAiSettings(settings: AiSettings) {
+        currentAiSettings = settings
+        lifecycleScope.launch {
+            settingsRepository.saveAiSettings(settings)
+            // 配置AgentEngine
+            if (settings.apiKey.isNotBlank()) {
+                agentEngine.configureAi(settings)
+            }
+        }
+    }
+    
+    /**
+     * 测试AI连接
+     */
+    private fun testAiConnection() {
+        isTestingConnection = true
+        testResult = null
+        lifecycleScope.launch {
+            try {
+                val success = agentEngine.testAiConnection()
+                testResult = if (success) "✓ 连接成功！" else "✗ 连接失败，请检查设置"
+            } catch (e: Exception) {
+                testResult = "✗ 连接失败: ${e.message}"
+            } finally {
+                isTestingConnection = false
+            }
+        }
+    }
 }
 
 /**
@@ -162,10 +249,12 @@ fun MainScreen(
     hasAccessibilityPermission: Boolean,
     hasMicrophonePermission: Boolean,
     isServiceRunning: Boolean,
+    isAiConfigured: Boolean,
     onRequestOverlayPermission: () -> Unit,
     onRequestAccessibilityPermission: () -> Unit,
     onRequestMicrophonePermission: () -> Unit,
-    onToggleService: () -> Unit
+    onToggleService: () -> Unit,
+    onOpenSettings: () -> Unit
 ) {
     val allPermissionsGranted = hasOverlayPermission && hasAccessibilityPermission && hasMicrophonePermission
     
@@ -193,7 +282,15 @@ fun MainScreen(
             // Logo和标题
             AppHeader()
             
-            Spacer(modifier = Modifier.height(40.dp))
+            Spacer(modifier = Modifier.height(32.dp))
+            
+            // AI设置卡片
+            AiSettingsCard(
+                isConfigured = isAiConfigured,
+                onOpenSettings = onOpenSettings
+            )
+            
+            Spacer(modifier = Modifier.height(16.dp))
             
             // 权限卡片
             PermissionSection(
@@ -209,9 +306,10 @@ fun MainScreen(
             
             // 启动按钮
             ServiceControlButton(
-                enabled = allPermissionsGranted,
+                enabled = allPermissionsGranted && isAiConfigured,
                 isRunning = isServiceRunning,
-                onClick = onToggleService
+                onClick = onToggleService,
+                needsAiConfig = !isAiConfigured
             )
             
             Spacer(modifier = Modifier.height(24.dp))
@@ -411,13 +509,85 @@ fun PermissionItem(
 }
 
 /**
+ * AI设置卡片
+ */
+@Composable
+fun AiSettingsCard(
+    isConfigured: Boolean,
+    onOpenSettings: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .clickable { onOpenSettings() },
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = Color(0xFF1E293B)
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(20.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // 图标
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(CircleShape)
+                    .background(
+                        if (isConfigured) Color(0xFF10B981).copy(alpha = 0.2f)
+                        else Color(0xFFEF4444).copy(alpha = 0.2f)
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Psychology,
+                    contentDescription = null,
+                    tint = if (isConfigured) Color(0xFF10B981) else Color(0xFFEF4444),
+                    modifier = Modifier.size(24.dp)
+                )
+            }
+            
+            Spacer(modifier = Modifier.width(16.dp))
+            
+            // 文字
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "AI设置",
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Color.White
+                )
+                Text(
+                    text = if (isConfigured) "已配置 - 点击修改" else "未配置 - 点击设置API Key",
+                    fontSize = 13.sp,
+                    color = if (isConfigured) Color(0xFF10B981) else Color(0xFFEF4444)
+                )
+            }
+            
+            // 箭头
+            Icon(
+                imageVector = Icons.Default.ChevronRight,
+                contentDescription = "进入设置",
+                tint = Color(0xFF64748B),
+                modifier = Modifier.size(24.dp)
+            )
+        }
+    }
+}
+
+/**
  * 服务控制按钮
  */
 @Composable
 fun ServiceControlButton(
     enabled: Boolean,
     isRunning: Boolean,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    needsAiConfig: Boolean = false
 ) {
     Button(
         onClick = onClick,
@@ -447,7 +617,7 @@ fun ServiceControlButton(
     if (!enabled) {
         Spacer(modifier = Modifier.height(8.dp))
         Text(
-            text = "请先授予所有权限",
+            text = if (needsAiConfig) "请先配置AI设置" else "请先授予所有权限",
             fontSize = 12.sp,
             color = Color(0xFF94A3B8),
             textAlign = TextAlign.Center,
