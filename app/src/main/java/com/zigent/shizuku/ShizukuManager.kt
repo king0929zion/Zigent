@@ -172,6 +172,7 @@ class ShizukuManager(private val context: Context) {
 
     /**
      * 执行 Shell 命令
+     * 使用反射调用 Shizuku.newProcess (因为该方法在某些版本中是私有的)
      */
     suspend fun executeCommand(command: String): ShizukuResult = withContext(Dispatchers.IO) {
         if (!isAvailable()) {
@@ -185,8 +186,21 @@ class ShizukuManager(private val context: Context) {
         try {
             Logger.d("Shizuku executing: $command", TAG)
             
-            // 使用 Shizuku 执行命令
-            val process = Shizuku.newProcess(arrayOf("sh", "-c", command), null, null)
+            // 使用反射调用 Shizuku.newProcess
+            val process = try {
+                val method = Shizuku::class.java.getDeclaredMethod(
+                    "newProcess",
+                    Array<String>::class.java,
+                    Array<String>::class.java,
+                    String::class.java
+                )
+                method.isAccessible = true
+                method.invoke(null, arrayOf("sh", "-c", command), null, null) as Process
+            } catch (e: Exception) {
+                Logger.w("Shizuku.newProcess not available, falling back to Runtime", TAG)
+                // 如果反射失败，尝试使用 Runtime（可能需要 root）
+                Runtime.getRuntime().exec(arrayOf("sh", "-c", command))
+            }
             
             val outputBuilder = StringBuilder()
             val errorBuilder = StringBuilder()
