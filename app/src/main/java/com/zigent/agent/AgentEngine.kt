@@ -136,6 +136,21 @@ class AgentEngine @Inject constructor(
         var consecutiveErrors = 0
         
         try {
+            // 先尝试采集屏幕状态，如果失败则使用简单对话模式
+            val initialScreenState = try {
+                captureScreen()
+            } catch (e: Exception) {
+                Logger.w("Screen capture failed, using simple chat mode: ${e.message}", TAG)
+                null
+            }
+            
+            // 如果无法获取屏幕状态，使用简单对话模式
+            if (initialScreenState == null || initialScreenState.uiElements.isEmpty()) {
+                Logger.i("Using simple chat mode for task: $task", TAG)
+                executeSimpleChatMode(task)
+                return
+            }
+            
             _state.value = AgentState.EXECUTING
             callback?.onStateChanged(AgentState.EXECUTING)
             
@@ -231,6 +246,72 @@ class AgentEngine @Inject constructor(
             _state.value = AgentState.FAILED
             callback?.onStateChanged(AgentState.FAILED)
             callback?.onTaskFailed("执行出错: ${e.message}")
+        }
+    }
+
+    /**
+     * 简单对话模式 - 当无法获取屏幕状态时使用
+     * 直接调用AI进行对话，不执行任何操作
+     */
+    private suspend fun executeSimpleChatMode(task: String) {
+        Logger.i("Executing simple chat mode for: $task", TAG)
+        
+        _state.value = AgentState.EXECUTING
+        callback?.onStateChanged(AgentState.EXECUTING)
+        callback?.onProgress("正在思考...")
+        
+        try {
+            val decider = actionDecider ?: throw IllegalStateException("ActionDecider not initialized")
+            
+            // 创建一个简单的对话请求
+            val simplePrompt = """
+用户说: "$task"
+
+请直接回复用户，给出有帮助的回答。
+如果用户要求执行手机操作（如打开应用、发送消息等），请告诉用户你目前无法控制手机，但可以提供指导。
+回复要简洁友好。
+
+请用以下JSON格式回复：
+{
+    "thought": "你的思考过程",
+    "action": {
+        "action": "FINISHED",
+        "description": "回复用户",
+        "message": "你的回复内容"
+    }
+}
+""".trimIndent()
+            
+            // 创建一个空的屏幕状态
+            val emptyScreenState = ScreenState(
+                packageName = "unknown",
+                activityName = null,
+                screenDescription = "无法获取屏幕信息",
+                uiElements = emptyList(),
+                screenshotBase64 = null
+            )
+            
+            // 调用AI
+            val decision = decider.decide(task, emptyScreenState, emptyList())
+            
+            Logger.d("Simple chat response: ${decision.thought}", TAG)
+            
+            // 返回结果
+            _state.value = AgentState.COMPLETED
+            callback?.onStateChanged(AgentState.COMPLETED)
+            
+            val responseMessage = decision.action.resultMessage 
+                ?: decision.thought.take(200)
+                ?: "抱歉，我无法理解您的请求"
+            
+            callback?.onTaskCompleted(responseMessage)
+            Logger.i("Simple chat completed: $responseMessage", TAG)
+            
+        } catch (e: Exception) {
+            Logger.e("Simple chat mode failed", e, TAG)
+            _state.value = AgentState.FAILED
+            callback?.onStateChanged(AgentState.FAILED)
+            callback?.onTaskFailed("AI响应失败: ${e.message}")
         }
     }
 

@@ -231,36 +231,48 @@ class FloatingInteractionController(
 
     /**
      * 处理语音识别结果
+     * 注意：这里只更新识别文本，不自动触发AI处理
+     * AI处理由用户点击悬浮球结束语音输入时触发
      */
     private fun handleVoiceResult(result: VoiceInteractionResult) {
+        Logger.d("Voice result received: success=${result.success}, text='${result.text}', error='${result.errorMessage}'", TAG)
+        
         if (result.success && result.text.isNotBlank()) {
+            // 更新识别文本
             _recognizedText.value = result.text
             callback?.onVoiceResult(result.text)
+            Logger.i("Voice recognized: ${result.text}", TAG)
             
-            Logger.i("Voice input: ${result.text}", TAG)
+            // 检查当前阶段，如果还在语音输入阶段，说明识别自动结束了
+            // 此时自动进入AI处理
+            if (_phase.value == InteractionPhase.VOICE_INPUT) {
+                Logger.i("Auto-triggering AI processing after voice recognition completed", TAG)
+                startAiProcessing(result.text)
+            }
+        } else if (result.errorMessage.isNotBlank()) {
+            // 识别出错
+            Logger.w("Voice recognition error: ${result.errorMessage}", TAG)
             
-            // 进入AI处理阶段
-            startAiProcessing(result.text)
-        } else {
-            // 识别失败
-            Logger.w("Voice recognition failed: ${result.errorMessage}", TAG)
-            
-            if (result.errorMessage.contains("无法识别") || result.errorMessage.contains("超时")) {
-                _phase.value = InteractionPhase.ERROR
-                callback?.onError("没有检测到语音，请重试")
-                voiceManager.speak("没有检测到语音，请点击悬浮球重试")
-                
-                scope.launch {
-                    delay(2000)
-                    reset()
+            // 只有在严重错误时才显示错误状态
+            if (_phase.value == InteractionPhase.VOICE_INPUT) {
+                // 如果已经有识别到的文本，使用已有文本
+                val existingText = _recognizedText.value.ifBlank { 
+                    voiceManager.lastRecognizedText.value 
                 }
-            } else {
-                _phase.value = InteractionPhase.ERROR
-                callback?.onError(result.errorMessage)
                 
-                scope.launch {
-                    delay(2000)
-                    reset()
+                if (existingText.isNotBlank()) {
+                    Logger.i("Using existing recognized text: $existingText", TAG)
+                    startAiProcessing(existingText)
+                } else {
+                    // 真的没有识别到任何内容
+                    _phase.value = InteractionPhase.ERROR
+                    callback?.onError("没有检测到语音，请重试")
+                    voiceManager.speak("没有检测到语音，请点击悬浮球重试")
+                    
+                    scope.launch {
+                        delay(2000)
+                        reset()
+                    }
                 }
             }
         }
@@ -275,11 +287,19 @@ class FloatingInteractionController(
         _phase.value = InteractionPhase.AI_PROCESSING
         callback?.onPhaseChanged(InteractionPhase.AI_PROCESSING)
         
-        // 播报确认
-        voiceManager.speak("收到，正在为您处理")
+        // 检查AI是否已配置
+        if (!agentEngine.isAiConfigured()) {
+            Logger.e("AI not configured when trying to process", null, TAG)
+            failTask("AI未配置，请在设置中配置AI密钥")
+            return
+        }
         
-        // 启动Agent执行任务
-        agentEngine.startTask(userInput)
+        // 播报确认
+        voiceManager.speak("收到：$userInput，正在为您处理") {
+            // 播报完成后启动Agent执行任务
+            Logger.i("Starting agent task for: $userInput", TAG)
+            agentEngine.startTask(userInput)
+        }
     }
 
     /**

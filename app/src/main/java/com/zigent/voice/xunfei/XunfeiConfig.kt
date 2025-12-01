@@ -27,7 +27,7 @@ object XunfeiConfig {
     const val ACCENT = "mandarin" // 普通话
     
     // 其他设置
-    const val VAD_EOS = 3000 // 静音检测时长（毫秒）
+    const val VAD_EOS = 10000 // 静音检测时长（毫秒），设置长一点避免过早结束
     const val DWA = "wpgs" // 动态修正（开启流式结果返回）
     const val PTT = 1 // 标点符号（1-返回标点）
     const val NUF = 1 // 数字格式（1-按数值格式输出）
