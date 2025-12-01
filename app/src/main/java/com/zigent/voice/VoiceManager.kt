@@ -2,6 +2,10 @@ package com.zigent.voice
 
 import android.content.Context
 import com.zigent.utils.Logger
+import com.zigent.voice.xunfei.XunfeiConfig
+import com.zigent.voice.xunfei.XunfeiRecognitionCallback
+import com.zigent.voice.xunfei.XunfeiRecognitionState
+import com.zigent.voice.xunfei.XunfeiSpeechRecognizer
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -30,6 +34,14 @@ data class VoiceInteractionResult(
 )
 
 /**
+ * 语音识别服务类型
+ */
+enum class SpeechRecognizerType {
+    ANDROID_NATIVE, // Android原生
+    XUNFEI          // 讯飞
+}
+
+/**
  * 语音交互管理器
  * 统一管理语音识别和语音合成
  */
@@ -41,8 +53,14 @@ class VoiceManager @Inject constructor(
         private const val TAG = "VoiceManager"
     }
 
-    // 语音识别器
-    private val recognizer = VoiceRecognizer(context)
+    // 语音识别服务类型（默认使用讯飞）
+    var recognizerType: SpeechRecognizerType = SpeechRecognizerType.XUNFEI
+    
+    // Android原生语音识别器
+    private val nativeRecognizer = VoiceRecognizer(context)
+    
+    // 讯飞语音识别器
+    private val xunfeiRecognizer = XunfeiSpeechRecognizer(context)
     
     // 语音合成器
     private val tts = TextToSpeechManager(context)
@@ -70,11 +88,20 @@ class VoiceManager @Inject constructor(
             return
         }
         
-        Logger.i("Initializing VoiceManager", TAG)
+        Logger.i("Initializing VoiceManager with $recognizerType", TAG)
         
         // 初始化语音识别
-        recognizer.initialize()
-        recognizer.callback = createRecognitionCallback()
+        when (recognizerType) {
+            SpeechRecognizerType.XUNFEI -> {
+                // 讯飞不需要显式初始化，连接时自动初始化
+                xunfeiRecognizer.callback = createXunfeiRecognitionCallback()
+                Logger.i("Xunfei recognizer configured", TAG)
+            }
+            SpeechRecognizerType.ANDROID_NATIVE -> {
+                nativeRecognizer.initialize()
+                nativeRecognizer.callback = createRecognitionCallback()
+            }
+        }
         
         // 初始化TTS
         tts.initialize { success ->
@@ -83,31 +110,68 @@ class VoiceManager @Inject constructor(
                 tts.callback = createTtsCallback()
                 Logger.i("VoiceManager initialized", TAG)
             } else {
-                Logger.e("Failed to initialize VoiceManager", TAG)
+                Logger.e("Failed to initialize VoiceManager", null, TAG)
             }
             onComplete?.invoke(success)
         }
     }
-
+    
     /**
-     * 创建语音识别回调
+     * 创建讯飞语音识别回调
      */
-    private fun createRecognitionCallback(): VoiceRecognitionCallback {
-        return object : VoiceRecognitionCallback {
-            override fun onResult(text: String) {
-                Logger.d("Recognition result: $text", TAG)
+    private fun createXunfeiRecognitionCallback(): XunfeiRecognitionCallback {
+        return object : XunfeiRecognitionCallback {
+            override fun onResult(text: String, isLast: Boolean) {
+                Logger.d("Xunfei result: $text, isLast: $isLast", TAG)
                 _lastRecognizedText.value = text
                 _state.value = VoiceInteractionState.IDLE
                 onRecognitionResult?.invoke(VoiceInteractionResult(true, text))
             }
 
             override fun onPartialResult(text: String) {
-                Logger.d("Partial result: $text", TAG)
+                Logger.d("Xunfei partial: $text", TAG)
                 _lastRecognizedText.value = text
             }
 
             override fun onError(errorCode: Int, errorMessage: String) {
-                Logger.e("Recognition error: $errorMessage", TAG)
+                Logger.e("Xunfei error: $errorMessage", null, TAG)
+                _state.value = VoiceInteractionState.ERROR
+                onRecognitionResult?.invoke(VoiceInteractionResult(false, errorMessage = errorMessage))
+                _state.value = VoiceInteractionState.IDLE
+            }
+
+            override fun onStateChanged(state: XunfeiRecognitionState) {
+                _state.value = when (state) {
+                    XunfeiRecognitionState.IDLE -> VoiceInteractionState.IDLE
+                    XunfeiRecognitionState.CONNECTING -> VoiceInteractionState.LISTENING
+                    XunfeiRecognitionState.LISTENING -> VoiceInteractionState.LISTENING
+                    XunfeiRecognitionState.PROCESSING -> VoiceInteractionState.RECOGNIZING
+                    XunfeiRecognitionState.SUCCESS -> VoiceInteractionState.IDLE
+                    XunfeiRecognitionState.ERROR -> VoiceInteractionState.ERROR
+                }
+            }
+        }
+    }
+
+    /**
+     * 创建Android原生语音识别回调
+     */
+    private fun createRecognitionCallback(): VoiceRecognitionCallback {
+        return object : VoiceRecognitionCallback {
+            override fun onResult(text: String) {
+                Logger.d("Native recognition result: $text", TAG)
+                _lastRecognizedText.value = text
+                _state.value = VoiceInteractionState.IDLE
+                onRecognitionResult?.invoke(VoiceInteractionResult(true, text))
+            }
+
+            override fun onPartialResult(text: String) {
+                Logger.d("Native partial result: $text", TAG)
+                _lastRecognizedText.value = text
+            }
+
+            override fun onError(errorCode: Int, errorMessage: String) {
+                Logger.e("Native recognition error: $errorMessage", null, TAG)
                 _state.value = VoiceInteractionState.ERROR
                 onRecognitionResult?.invoke(VoiceInteractionResult(false, errorMessage = errorMessage))
                 
@@ -165,21 +229,37 @@ class VoiceManager @Inject constructor(
         
         _lastRecognizedText.value = ""
         _state.value = VoiceInteractionState.LISTENING
-        recognizer.startListening()
+        
+        when (recognizerType) {
+            SpeechRecognizerType.XUNFEI -> {
+                Logger.i("Starting Xunfei recognition", TAG)
+                xunfeiRecognizer.startListening()
+            }
+            SpeechRecognizerType.ANDROID_NATIVE -> {
+                Logger.i("Starting native recognition", TAG)
+                nativeRecognizer.startListening()
+            }
+        }
     }
 
     /**
      * 停止语音识别
      */
     fun stopListening() {
-        recognizer.stopListening()
+        when (recognizerType) {
+            SpeechRecognizerType.XUNFEI -> xunfeiRecognizer.stopListening()
+            SpeechRecognizerType.ANDROID_NATIVE -> nativeRecognizer.stopListening()
+        }
     }
 
     /**
      * 取消语音识别
      */
     fun cancelListening() {
-        recognizer.cancel()
+        when (recognizerType) {
+            SpeechRecognizerType.XUNFEI -> xunfeiRecognizer.cancel()
+            SpeechRecognizerType.ANDROID_NATIVE -> nativeRecognizer.cancel()
+        }
         _state.value = VoiceInteractionState.IDLE
     }
 
@@ -237,7 +317,10 @@ class VoiceManager @Inject constructor(
      * 检查是否正在聆听
      */
     fun isListening(): Boolean {
-        return recognizer.isListening
+        return when (recognizerType) {
+            SpeechRecognizerType.XUNFEI -> xunfeiRecognizer.isListening
+            SpeechRecognizerType.ANDROID_NATIVE -> nativeRecognizer.isListening
+        }
     }
 
     /**
@@ -265,14 +348,18 @@ class VoiceManager @Inject constructor(
      * 检查语音识别是否可用
      */
     fun isRecognitionAvailable(): Boolean {
-        return VoiceRecognizer.isRecognitionAvailable(context)
+        return when (recognizerType) {
+            SpeechRecognizerType.XUNFEI -> XunfeiConfig.isConfigured()
+            SpeechRecognizerType.ANDROID_NATIVE -> VoiceRecognizer.isRecognitionAvailable(context)
+        }
     }
 
     /**
      * 释放资源
      */
     fun release() {
-        recognizer.release()
+        nativeRecognizer.release()
+        xunfeiRecognizer.release()
         tts.release()
         isInitialized = false
         Logger.i("VoiceManager released", TAG)

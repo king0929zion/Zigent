@@ -156,16 +156,28 @@ class FloatingService : Service() {
     private fun loadAiSettings() {
         serviceScope.launch {
             try {
-                val settings = settingsRepository.aiSettingsFlow.first()
-                if (settings.apiKey.isNotBlank()) {
-                    agentEngine.configureAi(settings)
-                    interactionController?.configureAi(settings)
-                    Logger.i("AI settings loaded: ${settings.provider}", TAG)
+                // 加载AI设置
+                val aiSettings = settingsRepository.aiSettingsFlow.first()
+                if (aiSettings.apiKey.isNotBlank()) {
+                    agentEngine.configureAi(aiSettings)
+                    interactionController?.configureAi(aiSettings)
+                    Logger.i("AI settings loaded: ${aiSettings.provider}", TAG)
                 } else {
                     Logger.w("No API key configured", TAG)
                 }
+                
+                // 加载讯飞语音设置
+                val xunfeiSettings = settingsRepository.xunfeiSettingsFlow.first()
+                if (xunfeiSettings.isConfigured()) {
+                    com.zigent.voice.xunfei.XunfeiConfig.configure(
+                        xunfeiSettings.appId,
+                        xunfeiSettings.apiKey,
+                        xunfeiSettings.apiSecret
+                    )
+                    Logger.i("Xunfei settings loaded", TAG)
+                }
             } catch (e: Exception) {
-                Logger.e("Failed to load AI settings", e, TAG)
+                Logger.e("Failed to load settings", e, TAG)
             }
         }
     }
