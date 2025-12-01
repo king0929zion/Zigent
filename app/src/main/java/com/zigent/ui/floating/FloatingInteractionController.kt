@@ -8,13 +8,10 @@ import com.zigent.ai.AiSettings
 import com.zigent.utils.Logger
 import com.zigent.voice.VoiceInteractionResult
 import com.zigent.voice.VoiceManager
-import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import javax.inject.Inject
-import javax.inject.Singleton
 
 /**
  * 交互阶段
@@ -44,9 +41,8 @@ interface InteractionCallback {
  * 悬浮球交互控制器
  * 协调语音输入 -> AI处理 -> 任务执行的完整流程
  */
-@Singleton
-class FloatingInteractionController @Inject constructor(
-    @ApplicationContext private val context: Context,
+class FloatingInteractionController(
+    private val context: Context,
     private val voiceManager: VoiceManager,
     private val agentEngine: AgentEngine
 ) {

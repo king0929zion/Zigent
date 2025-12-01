@@ -140,7 +140,7 @@ class AgentEngine @Inject constructor(
             
             while (stepCount < AiConfig.MAX_AGENT_STEPS) {
                 // 检查是否被取消
-                if (!isActive) {
+                if (!kotlinx.coroutines.isActive) {
                     Logger.i("Task cancelled", TAG)
                     break
                 }

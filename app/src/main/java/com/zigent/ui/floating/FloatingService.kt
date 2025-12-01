@@ -10,12 +10,15 @@ import android.view.WindowManager
 import androidx.core.app.NotificationCompat
 import com.zigent.R
 import com.zigent.ZigentApp
+import com.zigent.adb.AdbManager
+import com.zigent.agent.ActionExecutor
+import com.zigent.agent.AgentEngine
+import com.zigent.agent.ScreenAnalyzer
 import com.zigent.ui.MainActivity
 import com.zigent.utils.Logger
 import com.zigent.utils.PermissionHelper
 import com.zigent.voice.VoiceManager
 import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.collectLatest
 
 /**
  * 悬浮球前台服务
@@ -92,8 +95,12 @@ class FloatingService : Service() {
     // 协程作用域
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     
-    // 语音管理器
+    // 依赖组件
     private lateinit var voiceManager: VoiceManager
+    private lateinit var adbManager: AdbManager
+    private lateinit var screenAnalyzer: ScreenAnalyzer
+    private lateinit var actionExecutor: ActionExecutor
+    private lateinit var agentEngine: AgentEngine
     
     // 交互控制器
     private var interactionController: FloatingInteractionController? = null
@@ -105,11 +112,31 @@ class FloatingService : Service() {
         
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         
+        // 初始化所有依赖
+        initializeDependencies()
+    }
+    
+    /**
+     * 初始化所有依赖组件
+     */
+    private fun initializeDependencies() {
         // 初始化语音管理器
         voiceManager = VoiceManager(this)
         
+        // 初始化ADB管理器
+        adbManager = AdbManager(this)
+        
+        // 初始化屏幕分析器
+        screenAnalyzer = ScreenAnalyzer(this, adbManager)
+        
+        // 初始化操作执行器
+        actionExecutor = ActionExecutor(this, adbManager)
+        
+        // 初始化Agent引擎
+        agentEngine = AgentEngine(this, screenAnalyzer, actionExecutor)
+        
         // 初始化交互控制器
-        interactionController = FloatingInteractionController(this, voiceManager).apply {
+        interactionController = FloatingInteractionController(this, voiceManager, agentEngine).apply {
             callback = createInteractionCallback()
         }
     }
@@ -147,6 +174,8 @@ class FloatingService : Service() {
         super.onDestroy()
         hideFloatingBall()
         interactionController?.release()
+        agentEngine.release()
+        adbManager.release()
         serviceScope.cancel()
         isRunning = false
         instance = null
@@ -322,4 +351,3 @@ class FloatingService : Service() {
         sendBroadcast(intent)
     }
 }
-

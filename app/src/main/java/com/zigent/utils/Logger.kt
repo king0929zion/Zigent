@@ -23,7 +23,11 @@ object Logger {
         Log.w(tag, message)
     }
     
-    fun e(message: String, throwable: Throwable? = null, tag: String = TAG) {
+    fun e(message: String, tag: String = TAG) {
+        Log.e(tag, message)
+    }
+    
+    fun e(message: String, throwable: Throwable?, tag: String = TAG) {
         if (throwable != null) {
             Log.e(tag, message, throwable)
         } else {
@@ -35,4 +39,3 @@ object Logger {
         Log.v(tag, message)
     }
 }
-
