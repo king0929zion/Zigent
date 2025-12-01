@@ -277,6 +277,64 @@ class ZigentAccessibilityService : AccessibilityService() {
     fun performNotifications(): Boolean {
         return performGlobalAction(GLOBAL_ACTION_NOTIFICATIONS)
     }
+    
+    /**
+     * 打开通知栏
+     */
+    fun performOpenNotifications(): Boolean {
+        return performGlobalAction(GLOBAL_ACTION_NOTIFICATIONS)
+    }
+    
+    /**
+     * 打开快速设置
+     */
+    fun performQuickSettings(): Boolean {
+        return performGlobalAction(GLOBAL_ACTION_QUICK_SETTINGS)
+    }
+    
+    /**
+     * 执行电源对话框
+     */
+    fun performPowerDialog(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            performGlobalAction(GLOBAL_ACTION_POWER_DIALOG)
+        } else {
+            false
+        }
+    }
+    
+    /**
+     * 锁屏
+     */
+    fun performLockScreen(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            performGlobalAction(GLOBAL_ACTION_LOCK_SCREEN)
+        } else {
+            false
+        }
+    }
+    
+    /**
+     * 截屏
+     */
+    fun performTakeScreenshot(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            performGlobalAction(GLOBAL_ACTION_TAKE_SCREENSHOT)
+        } else {
+            false
+        }
+    }
+    
+    /**
+     * 分屏
+     */
+    fun performSplitScreen(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            performGlobalAction(GLOBAL_ACTION_TOGGLE_SPLIT_SCREEN)
+        } else {
+            false
+        }
+    }
 
     /**
      * 在指定节点输入文本

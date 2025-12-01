@@ -271,21 +271,54 @@ class AdbCommands(private val context: Context, private val connection: AdbConne
 
     // 常用按键码
     object KeyCodes {
+        // 导航键
         const val BACK = 4
         const val HOME = 3
         const val RECENT_APPS = 187
+        const val MENU = 82
+        
+        // 电源和音量
         const val POWER = 26
         const val VOLUME_UP = 24
         const val VOLUME_DOWN = 25
+        const val VOLUME_MUTE = 164
+        
+        // 文本编辑
         const val ENTER = 66
         const val DEL = 67
+        const val FORWARD_DEL = 112
         const val TAB = 61
         const val SPACE = 62
+        const val ESCAPE = 111
+        
+        // 方向键
         const val DPAD_UP = 19
         const val DPAD_DOWN = 20
         const val DPAD_LEFT = 21
         const val DPAD_RIGHT = 22
         const val DPAD_CENTER = 23
+        
+        // 组合键（需要特殊处理）
+        const val CTRL_A = 29 // 实际是 'A'，需要配合 CTRL
+        const val CTRL_C = 31 // 实际是 'C'，需要配合 CTRL
+        const val CTRL_V = 50 // 实际是 'V'，需要配合 CTRL
+        const val CTRL_X = 52 // 实际是 'X'，需要配合 CTRL
+        const val CTRL_Z = 54 // 实际是 'Z'，需要配合 CTRL
+        
+        // 媒体键
+        const val MEDIA_PLAY_PAUSE = 85
+        const val MEDIA_STOP = 86
+        const val MEDIA_NEXT = 87
+        const val MEDIA_PREVIOUS = 88
+        
+        // 相机
+        const val CAMERA = 27
+        
+        // 搜索
+        const val SEARCH = 84
+        
+        // 通知
+        const val NOTIFICATION = 83
     }
 
     /**

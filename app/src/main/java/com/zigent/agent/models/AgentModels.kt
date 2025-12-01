@@ -4,16 +4,56 @@ package com.zigent.agent.models
  * Agent操作类型
  */
 enum class ActionType {
+    // 基础触摸操作
     TAP,            // 点击
+    DOUBLE_TAP,     // 双击
     LONG_PRESS,     // 长按
-    SWIPE,          // 滑动
+    SWIPE,          // 滑动（自定义起止点）
+    
+    // 方向滑动
+    SWIPE_UP,       // 上滑
+    SWIPE_DOWN,     // 下滑
+    SWIPE_LEFT,     // 左滑
+    SWIPE_RIGHT,    // 右滑
+    
+    // 滚动操作
+    SCROLL,         // 滚动（页面内）
+    SCROLL_TO_TOP,  // 滚动到顶部
+    SCROLL_TO_BOTTOM, // 滚动到底部
+    
+    // 输入操作
     INPUT_TEXT,     // 输入文本
+    CLEAR_TEXT,     // 清空输入框
+    
+    // 按键操作
     PRESS_KEY,      // 按键（返回、Home等）
-    OPEN_APP,       // 打开应用
+    PRESS_BACK,     // 返回
+    PRESS_HOME,     // 主页
+    PRESS_RECENT,   // 最近任务
+    
+    // 应用操作
+    OPEN_APP,       // 打开应用（通过包名或名称）
+    CLOSE_APP,      // 关闭应用
+    OPEN_URL,       // 打开URL
+    OPEN_SETTINGS,  // 打开系统设置
+    
+    // 系统操作
+    TAKE_SCREENSHOT, // 截图
+    COPY_TEXT,      // 复制文本
+    PASTE_TEXT,     // 粘贴文本
+    
+    // 通知操作
+    OPEN_NOTIFICATION, // 打开通知栏
+    CLEAR_NOTIFICATION, // 清除通知
+    
+    // 等待和控制
     WAIT,           // 等待
-    SCROLL,         // 滚动
+    WAIT_FOR_ELEMENT, // 等待元素出现
+    
+    // 任务状态
     FINISHED,       // 任务完成
-    FAILED          // 任务失败
+    FAILED,         // 任务失败
+    ASK_USER        // 询问用户
 }
 
 /**
@@ -27,6 +67,7 @@ data class AgentAction(
     val x: Int? = null,
     val y: Int? = null,
     val elementDescription: String? = null,  // 目标元素描述
+    val elementId: String? = null,           // 目标元素ID（优先使用）
     
     // 滑动相关
     val startX: Int? = null,
@@ -34,24 +75,35 @@ data class AgentAction(
     val endX: Int? = null,
     val endY: Int? = null,
     val duration: Int? = null,
+    val swipeDistance: Int? = null,          // 滑动距离（百分比，如50表示屏幕50%）
     
     // 输入文本
     val text: String? = null,
     
     // 按键
     val keyCode: Int? = null,
+    val keyName: String? = null,             // 按键名称
     
-    // 打开应用
+    // 应用相关
     val packageName: String? = null,
+    val appName: String? = null,             // 应用名称（用于查找包名）
+    val activityName: String? = null,        // 要启动的Activity
     
-    // 等待时间（毫秒）
+    // URL
+    val url: String? = null,
+    
+    // 等待相关
     val waitTime: Long? = null,
+    val waitForText: String? = null,         // 等待出现的文字
+    val timeout: Long? = null,               // 超时时间
     
     // 滚动方向
     val scrollDirection: ScrollDirection? = null,
+    val scrollCount: Int? = null,            // 滚动次数
     
-    // 结果消息（完成/失败时使用）
-    val resultMessage: String? = null
+    // 结果消息（完成/失败/询问时使用）
+    val resultMessage: String? = null,
+    val question: String? = null             // ASK_USER时的问题
 )
 
 /**
