@@ -25,9 +25,9 @@ class FloatingTextPanel(context: Context) : View(context) {
     companion object {
         private const val TAG = "FloatingTextPanel"
         
-        // 面板尺寸（优化：更大的尺寸）
-        const val PANEL_WIDTH = 340  // dp（增加60dp）
-        const val PANEL_HEIGHT = 180 // dp（增加60dp）
+        // 面板尺寸（基准，实际按屏幕宽度 92% 自适应）
+        const val PANEL_WIDTH = 340  // dp
+        const val PANEL_HEIGHT = 180 // dp
         const val PANEL_MARGIN = 16  // dp
         const val CORNER_RADIUS = 20f // dp（更圆润）
         const val PADDING = 20 // dp（更大的内边距）
@@ -39,7 +39,11 @@ class FloatingTextPanel(context: Context) : View(context) {
 
     // 尺寸（像素）
     private val density = resources.displayMetrics.density
-    private val panelWidthPx = (PANEL_WIDTH * density).toInt()
+    private val screenWidthPx = resources.displayMetrics.widthPixels
+    private val panelWidthPx = minOf(
+        (PANEL_WIDTH * density).toInt(),
+        (screenWidthPx * 0.92f).toInt()
+    )
     private val panelHeightPx = (PANEL_HEIGHT * density).toInt()
     private val panelMarginPx = (PANEL_MARGIN * density).toInt()
     private val cornerRadiusPx = CORNER_RADIUS * density
@@ -50,6 +54,7 @@ class FloatingTextPanel(context: Context) : View(context) {
     private val backgroundPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
         color = ContextCompat.getColor(context, R.color.panel_background)
+        setShadowLayer(12 * density, 0f, 6 * density, 0x55000000)
     }
     
     private val titlePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -81,11 +86,14 @@ class FloatingTextPanel(context: Context) : View(context) {
     // 动画
     private var showAnimator: ValueAnimator? = null
     private var currentAlpha = 0f
-    
+    private val slideDistance = 12 * density
+
     init {
         // 设置初始透明
         alpha = 0f
-        setLayerType(LAYER_TYPE_HARDWARE, null)
+        translationY = slideDistance
+        // 阴影需要软件层
+        setLayerType(LAYER_TYPE_SOFTWARE, backgroundPaint)
     }
 
     /**
@@ -143,6 +151,7 @@ class FloatingTextPanel(context: Context) : View(context) {
             addUpdateListener { animator ->
                 currentAlpha = animator.animatedValue as Float
                 alpha = currentAlpha
+                translationY = slideDistance * (1f - currentAlpha)
             }
             start()
         }
@@ -165,6 +174,7 @@ class FloatingTextPanel(context: Context) : View(context) {
             addUpdateListener { animator ->
                 currentAlpha = animator.animatedValue as Float
                 alpha = currentAlpha
+                translationY = slideDistance * (1f - currentAlpha)
                 if (currentAlpha == 0f) {
                     isVisible = false
                 }
