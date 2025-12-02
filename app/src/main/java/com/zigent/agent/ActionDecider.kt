@@ -268,7 +268,7 @@ class ActionDecider(
                 if (content.isNotEmpty() || elem.isClickable || elem.isEditable) {
                     val type = when {
                         elem.isEditable -> "输入框"
-                        elem.isClickable && elem.isCheckable -> "选择框"
+                        elem.isScrollable -> "列表"
                         elem.isClickable -> "按钮"
                         else -> "文本"
                     }
@@ -328,7 +328,7 @@ class ActionDecider(
                 description = description,
                 x = arguments.get("x")?.asInt,
                 y = arguments.get("y")?.asInt,
-                duration = arguments.get("duration")?.asLong ?: 800L
+                duration = arguments.get("duration")?.asInt ?: 800
             )
             "double_tap" -> AgentAction(
                 type = ActionType.DOUBLE_TAP,
@@ -365,7 +365,7 @@ class ActionDecider(
                 startY = arguments.get("start_y")?.asInt,
                 endX = arguments.get("end_x")?.asInt,
                 endY = arguments.get("end_y")?.asInt,
-                duration = arguments.get("duration")?.asLong ?: 300L
+                duration = arguments.get("duration")?.asInt ?: 300
             )
             
             // 输入操作
@@ -409,7 +409,7 @@ class ActionDecider(
             "wait" -> AgentAction(
                 type = ActionType.WAIT,
                 description = description,
-                waitTime = arguments.get("time")?.asInt ?: 2000
+                waitTime = arguments.get("time")?.asLong ?: 2000L
             )
             
             // 任务状态
