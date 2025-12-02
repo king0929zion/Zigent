@@ -172,7 +172,8 @@ object InstalledAppsHelper {
         val apps = getInstalledUserApps(context)
         
         if (apps.isEmpty()) {
-            return "【已安装应用】无法获取应用列表"
+            Logger.w("Installed app list is empty. Package visibility may be restricted.", TAG)
+            return "【已安装应用】无法获取应用列表，可能缺少应用可见性权限（QUERY_ALL_PACKAGES）。请检查权限后重试。"
         }
         
         val sb = StringBuilder()

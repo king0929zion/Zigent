@@ -4,6 +4,10 @@
 
     <!-- 悬浮窗权限 -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
+    <!-- 包可见性：列出/打开已安装应用 -->
+    <uses-permission
+        android:name="android.permission.QUERY_ALL_PACKAGES"
+        tools:ignore="QueryAllPackagesPermission" />
     
     <!-- 网络权限（AI API调用） -->
     <uses-permission android:name="android.permission.INTERNET"/>
@@ -20,6 +24,14 @@
     
     <!-- 震动反馈 -->
     <uses-permission android:name="android.permission.VIBRATE"/>
+
+    <!-- 让应用清单可见，便于 open_app 工具查找并启动任意已安装的桌面应用 -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
 
     <application
         android:name=".ZigentApp"
