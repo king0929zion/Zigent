@@ -360,6 +360,8 @@ class AgentEngine @Inject constructor(
         
         var stepCount = 0
         var consecutiveErrors = 0
+        var vlmCallCount = 0  // VLM 调用计数，防止无限循环
+        val maxVlmCalls = 3   // 每个任务最多调用 3 次 VLM
         
         while (stepCount < AiConfig.MAX_AGENT_STEPS) {
             // 检查是否被取消
@@ -425,43 +427,62 @@ class AgentEngine @Inject constructor(
                     return
                 }
                 ActionType.DESCRIBE_SCREEN -> {
-                    // 调用 VLM 获取屏幕描述，然后重新决策
-                    callback?.onProgress("正在分析屏幕...")
-                    val vlmDescription = actionDecider?.describeScreen(
-                        screenState.screenshotBase64,
-                        decision.action.text  // focus
-                    )
-                    
-                    if (vlmDescription != null) {
-                        Logger.i("VLM description obtained, re-deciding...", TAG)
-                        // 用 VLM 描述重新决策
-                        val newDecision = actionDecider?.decide(task, screenState, executionHistory, vlmDescription)
-                        if (newDecision != null && newDecision.action.type != ActionType.DESCRIBE_SCREEN) {
-                            // 执行新决策
-                            callback?.onProgress("执行: ${newDecision.action.description}")
-                            val result = actionExecutor.execute(newDecision.action)
-                            
-                            val step = AgentStep(
-                                stepNumber = stepCount,
-                                screenStateBefore = screenState.screenDescription,
-                                action = newDecision.action,
-                                screenStateAfter = null,
-                                success = result.success,
-                                errorMessage = result.errorMessage
-                            )
-                            executionHistory.add(step)
-                            
-                            if (result.success) {
-                                consecutiveErrors = 0
-                                callback?.onStepCompleted(stepCount, true, result.message)
-                            } else {
-                                consecutiveErrors++
-                                callback?.onStepCompleted(stepCount, false, result.errorMessage ?: "执行失败")
-                            }
-                        }
-                    } else {
-                        Logger.w("VLM description failed, continuing...", TAG)
+                    // 检查 VLM 调用次数限制
+                    if (vlmCallCount >= maxVlmCalls) {
+                        Logger.w("VLM call limit reached ($maxVlmCalls), skipping", TAG)
+                        callback?.onProgress("屏幕分析次数已达上限，继续执行...")
+                        // 不调用 VLM，直接用当前信息重新决策
+                        delay(AiConfig.STEP_DELAY)
+                        continue
                     }
+                    
+                    vlmCallCount++
+                    callback?.onProgress("正在分析屏幕... ($vlmCallCount/$maxVlmCalls)")
+                    
+                    try {
+                        val vlmDescription = actionDecider?.describeScreen(
+                            screenState.screenshotBase64,
+                            decision.action.text  // focus
+                        )
+                        
+                        if (vlmDescription != null) {
+                            Logger.i("VLM description obtained, re-deciding...", TAG)
+                            // 用 VLM 描述重新决策
+                            val newDecision = actionDecider?.decide(task, screenState, executionHistory, vlmDescription)
+                            if (newDecision != null && newDecision.action.type != ActionType.DESCRIBE_SCREEN) {
+                                // 执行新决策
+                                callback?.onProgress("执行: ${newDecision.action.description}")
+                                val result = actionExecutor.execute(newDecision.action)
+                                
+                                val step = AgentStep(
+                                    stepNumber = stepCount,
+                                    screenStateBefore = screenState.screenDescription,
+                                    action = newDecision.action,
+                                    screenStateAfter = null,
+                                    success = result.success,
+                                    errorMessage = result.errorMessage
+                                )
+                                executionHistory.add(step)
+                                
+                                if (result.success) {
+                                    consecutiveErrors = 0
+                                    callback?.onStepCompleted(stepCount, true, result.message)
+                                } else {
+                                    consecutiveErrors++
+                                    callback?.onStepCompleted(stepCount, false, result.errorMessage ?: "执行失败")
+                                }
+                            } else if (newDecision?.action?.type == ActionType.DESCRIBE_SCREEN) {
+                                Logger.w("AI requested DESCRIBE_SCREEN again, ignoring", TAG)
+                            }
+                        } else {
+                            Logger.w("VLM description failed, continuing without it", TAG)
+                            consecutiveErrors++
+                        }
+                    } catch (e: Exception) {
+                        Logger.e("VLM call failed", e, TAG)
+                        consecutiveErrors++
+                    }
+                    
                     delay(AiConfig.STEP_DELAY)
                     continue
                 }

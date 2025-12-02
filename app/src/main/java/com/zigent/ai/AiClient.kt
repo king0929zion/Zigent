@@ -32,14 +32,17 @@ class AiClient(private val settings: AiSettings) {
         .create()
 
     private val httpClient = OkHttpClient.Builder()
-        .connectTimeout(AiConfig.API_TIMEOUT, TimeUnit.SECONDS)
-        .readTimeout(AiConfig.API_TIMEOUT, TimeUnit.SECONDS)
-        .writeTimeout(AiConfig.API_TIMEOUT, TimeUnit.SECONDS)
+        .connectTimeout(30, TimeUnit.SECONDS)   // 连接超时 30 秒
+        .readTimeout(120, TimeUnit.SECONDS)     // 读取超时 120 秒（LLM 响应可能较慢）
+        .writeTimeout(60, TimeUnit.SECONDS)     // 写入超时 60 秒
+        .retryOnConnectionFailure(true)
         .build()
 
     /**
      * 使用 VLM 描述图片内容
      * 当 LLM 调用 describe_screen 工具时使用
+     * 
+     * 参考文档: https://docs.siliconflow.cn/cn/api-reference/chat-completions/chat-completions#vlm
      */
     suspend fun describeImage(
         imageBase64: String,
@@ -47,26 +50,22 @@ class AiClient(private val settings: AiSettings) {
     ): Result<String> = withContext(Dispatchers.IO) {
         Logger.i("=== VLM Describe Image ===", TAG)
         
-        val prompt = buildString {
-            append("请详细描述这个手机屏幕截图的内容。包括：\n")
-            append("1. 当前显示的应用或页面\n")
-            append("2. 屏幕上的主要元素（按钮、文字、图片等）\n")
-            append("3. 界面布局和结构\n")
-            append("4. 任何重要的视觉信息\n")
-            if (!context.isNullOrBlank()) {
-                append("\n用户当前任务: $context\n")
-                append("请特别关注与此任务相关的元素。")
-            }
+        // 简化提示词，避免 VLM 输出过长
+        val prompt = if (!context.isNullOrBlank()) {
+            "描述这个手机屏幕截图，重点关注：$context"
+        } else {
+            "简要描述这个手机屏幕截图的内容，包括当前应用、主要元素和界面布局。"
         }
         
         try {
+            // 根据 SiliconFlow VLM 文档构建请求
+            // 注意：不要添加 detail 参数，可能不被支持
             val contentParts = listOf(
                 mapOf("type" to "text", "text" to prompt),
                 mapOf(
                     "type" to "image_url",
                     "image_url" to mapOf(
-                        "url" to "data:image/png;base64,$imageBase64",
-                        "detail" to "high"
+                        "url" to "data:image/png;base64,$imageBase64"
                     )
                 )
             )
@@ -79,11 +78,11 @@ class AiClient(private val settings: AiSettings) {
             val visionModel = settings.visionModel.ifBlank { AiConfig.SILICONFLOW_VLM_MODEL }
             Logger.i("Using VLM model: $visionModel", TAG)
             
+            // 简化请求，只包含必要参数
             val requestBody = mapOf(
                 "model" to visionModel,
                 "messages" to messages,
-                "max_tokens" to 2048,
-                "temperature" to 0.3f  // 较低温度，更准确的描述
+                "max_tokens" to 1024  // 减少输出长度，加快响应
             )
             
             val baseUrl = when (settings.provider) {
