@@ -63,8 +63,16 @@ class FloatingBallView(context: Context) : View(context) {
         color = 0xFFFFFFFF.toInt()
         style = Paint.Style.FILL
     }
+    private val irisPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        alpha = 180
+    }
     private val eyePupilPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = 0xFF1A1A1A.toInt()
+        style = Paint.Style.FILL
+    }
+    private val eyeHighlightPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0x80FFFFFF.toInt()
         style = Paint.Style.FILL
     }
     private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -213,6 +221,7 @@ class FloatingBallView(context: Context) : View(context) {
         }
         mainPaint.color = color
         ringPaint.color = color
+        irisPaint.color = color
     }
 
     /**
@@ -478,7 +487,10 @@ class FloatingBallView(context: Context) : View(context) {
             
             // 瞳孔（跟随eyeOffset移动）
             val pupilOffsetX = eyeOffset * eyeRadius * 0.3f
-            canvas.drawCircle(leftEyeX + pupilOffsetX, eyeY, pupilRadius, eyePupilPaint)
+            val pupilCx = leftEyeX + pupilOffsetX
+            canvas.drawCircle(pupilCx, eyeY, pupilRadius * 1.05f, irisPaint)
+            canvas.drawCircle(pupilCx, eyeY, pupilRadius, eyePupilPaint)
+            canvas.drawCircle(pupilCx - pupilRadius * 0.25f, eyeY - pupilRadius * 0.3f, pupilRadius * 0.25f, eyeHighlightPaint)
         } else {
             // 完全闭眼 - 画一条线
             iconPaint.strokeWidth = 3 * resources.displayMetrics.density
@@ -499,7 +511,10 @@ class FloatingBallView(context: Context) : View(context) {
             canvas.restore()
             
             val pupilOffsetX = eyeOffset * eyeRadius * 0.3f
-            canvas.drawCircle(rightEyeX + pupilOffsetX, eyeY, pupilRadius, eyePupilPaint)
+            val pupilCx = rightEyeX + pupilOffsetX
+            canvas.drawCircle(pupilCx, eyeY, pupilRadius * 1.05f, irisPaint)
+            canvas.drawCircle(pupilCx, eyeY, pupilRadius, eyePupilPaint)
+            canvas.drawCircle(pupilCx - pupilRadius * 0.25f, eyeY - pupilRadius * 0.3f, pupilRadius * 0.25f, eyeHighlightPaint)
         } else {
             canvas.drawLine(rightEyeX - eyeRadius, eyeY, rightEyeX + eyeRadius, eyeY, eyeWhitePaint)
         }
@@ -511,13 +526,20 @@ class FloatingBallView(context: Context) : View(context) {
     private fun drawWorkingEyes(canvas: Canvas, centerX: Float, centerY: Float, radius: Float) {
         val eyeSpacing = radius * 0.4f
         val eyeRadius = radius * 0.2f
+        val pupilRadius = eyeRadius * 0.4f
         val eyeY = centerY
         
         // 左眼 - 小圆点
-        canvas.drawCircle(centerX - eyeSpacing, eyeY, eyeRadius, eyeWhitePaint)
+        val leftX = centerX - eyeSpacing
+        canvas.drawCircle(leftX, eyeY, eyeRadius, eyeWhitePaint)
+        canvas.drawCircle(leftX, eyeY, pupilRadius * 1.05f, irisPaint)
+        canvas.drawCircle(leftX, eyeY, pupilRadius, eyePupilPaint)
         
         // 右眼 - 小圆点
-        canvas.drawCircle(centerX + eyeSpacing, eyeY, eyeRadius, eyeWhitePaint)
+        val rightX = centerX + eyeSpacing
+        canvas.drawCircle(rightX, eyeY, eyeRadius, eyeWhitePaint)
+        canvas.drawCircle(rightX, eyeY, pupilRadius * 1.05f, irisPaint)
+        canvas.drawCircle(rightX, eyeY, pupilRadius, eyePupilPaint)
     }
 
     /**
