@@ -226,8 +226,11 @@ private fun HomeScreen(
     onOpenShizukuApp: () -> Unit
 ) {
     val scrollState = rememberScrollState()
+    val snackbarHostState = remember { SnackbarHostState() }
+    val coroutineScope = rememberCoroutineScope()
     
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = {
@@ -285,6 +288,25 @@ private fun HomeScreen(
                     .fillMaxWidth()
                     .padding(bottom = 12.dp)
             )
+            AssistChip(
+                onClick = {
+                    val missing = status.getMissingPermissions()
+                    val message = if (missing.isEmpty()) "自检完成：全部就绪" else "缺少权限：" + missing.joinToString("、")
+                    coroutineScope.launch {
+                        snackbarHostState.showSnackbar(message, withDismissAction = true)
+                    }
+                },
+                label = { Text("权限自检") },
+                leadingIcon = {
+                    Icon(Icons.Outlined.Security, contentDescription = null)
+                },
+                colors = AssistChipDefaults.assistChipColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    labelColor = MaterialTheme.colorScheme.onSurface
+                )
+            )
+            
+            Spacer(modifier = Modifier.height(8.dp))
             
             // 悬浮窗权限
             PermissionCard(
