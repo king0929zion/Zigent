@@ -223,8 +223,8 @@ class ActionDecider(
     }
 
     /**
-     * 解析文本响应（当AI没有使用工具时）
-     * 注意：不要轻易判定为完成，优先尝试解析为操作
+     * 解析文本响应（AI选择用文字而非工具响应）
+     * 这通常意味着 AI 想要与用户交流
      */
     private fun parseTextResponse(text: String, reasoning: String?): AiDecision {
         val thought = reasoning ?: text.take(100)
@@ -243,13 +243,32 @@ class ActionDecider(
             return jsonDecision
         }
         
-        // 尝试从文本中提取操作
         val textLower = text.lowercase()
         
-        // 检查是否明确表示任务完成（需要更严格的匹配）
-        if ((textLower.contains("任务已完成") || textLower.contains("已成功完成") || 
-             textLower.contains("task completed") || textLower.contains("task finished")) &&
-            !textLower.contains("需要") && !textLower.contains("下一步")) {
+        // 检查是否是询问/确认（AI 想跟用户交流）
+        val isQuestion = text.contains("？") || text.contains("?")
+        val hasQuestionWords = textLower.contains("请问") || textLower.contains("需要") || 
+                               textLower.contains("你想") || textLower.contains("确认") ||
+                               textLower.contains("请告诉") || textLower.contains("请提供") ||
+                               textLower.contains("是否") || textLower.contains("哪个") ||
+                               textLower.contains("什么") || textLower.contains("谁")
+        
+        if (isQuestion || hasQuestionWords) {
+            Logger.i("AI wants to ask user: ${text.take(100)}", TAG)
+            return AiDecision(
+                thought = thought,
+                action = AgentAction(
+                    type = ActionType.ASK_USER,
+                    description = "AI需要确认",
+                    question = text.take(300)
+                )
+            )
+        }
+        
+        // 检查是否明确表示任务完成
+        if ((textLower.contains("已完成") || textLower.contains("成功") || 
+             textLower.contains("完成了") || textLower.contains("搞定")) &&
+            !textLower.contains("需要") && !textLower.contains("下一步") && !textLower.contains("请")) {
             return AiDecision(
                 thought = thought,
                 action = AgentAction(
@@ -261,8 +280,8 @@ class ActionDecider(
         }
         
         // 检查是否明确表示失败
-        if (textLower.contains("无法完成") || textLower.contains("任务失败") || 
-            textLower.contains("cannot complete") || textLower.contains("task failed")) {
+        if (textLower.contains("无法") || textLower.contains("失败") || 
+            textLower.contains("抱歉") || textLower.contains("不能")) {
             return AiDecision(
                 thought = thought,
                 action = AgentAction(
@@ -273,27 +292,15 @@ class ActionDecider(
             )
         }
         
-        // 检查是否是询问
-        if ((text.contains("？") || text.contains("?")) && 
-            (textLower.contains("请问") || textLower.contains("需要确认") || textLower.contains("你想"))) {
-            return AiDecision(
-                thought = thought,
-                action = AgentAction(
-                    type = ActionType.ASK_USER,
-                    description = "需要确认",
-                    question = text.take(200)
-                )
-            )
-        }
-        
-        // 默认：AI 没有正确使用工具，等待下一轮重试
-        Logger.w("AI did not use tools, text response: ${text.take(100)}", TAG)
+        // 默认：AI 用文字回复了，可能是想告诉用户一些信息
+        // 将其视为 ASK_USER，让用户看到并响应
+        Logger.i("AI text response, treating as message to user: ${text.take(100)}", TAG)
         return AiDecision(
-            thought = "AI返回文本而非工具调用，需要重试",
+            thought = thought,
             action = AgentAction(
-                type = ActionType.WAIT,
-                description = "等待重试",
-                waitTime = 1000L
+                type = ActionType.ASK_USER,
+                description = "AI消息",
+                question = text.take(300)
             )
         )
     }
