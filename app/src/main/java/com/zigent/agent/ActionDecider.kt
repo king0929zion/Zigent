@@ -124,6 +124,10 @@ class ActionDecider(
         )
     }
 
+    // Function Calling 连续失败计数
+    private var fcFailCount = 0
+    private val MAX_FC_FAILS = 2
+
     /**
      * 使用 Function Calling 决定下一步操作（支持多模态）
      */
@@ -149,41 +153,74 @@ class ActionDecider(
         
         result.fold(
             onSuccess = { callResult ->
-                parseToolCallResult(callResult)
+                val decision = parseToolCallResult(callResult, task, screenState, history)
+                // 如果解析成功，重置失败计数
+                if (decision.action.type != ActionType.FAILED) {
+                    fcFailCount = 0
+                }
+                decision
             },
             onFailure = { error ->
                 Logger.e("Function calling failed", error, TAG)
-                // 降级到普通模式
-                Logger.w("Falling back to text mode", TAG)
-                useFunctionCalling = false
-                decide(task, screenState, history)
+                handleFunctionCallingFailure(task, screenState, history, error.message)
             }
         )
     }
 
     /**
+     * 处理 Function Calling 失败
+     */
+    private suspend fun handleFunctionCallingFailure(
+        task: String,
+        screenState: ScreenState,
+        history: List<AgentStep>,
+        errorMsg: String?
+    ): AiDecision {
+        fcFailCount++
+        Logger.w("Function calling fail count: $fcFailCount", TAG)
+        
+        if (fcFailCount >= MAX_FC_FAILS) {
+            Logger.w("Too many FC failures, switching to text mode", TAG)
+            useFunctionCalling = false
+            fcFailCount = 0
+        }
+        
+        // 降级到普通模式
+        return decide(task, screenState, history)
+    }
+
+    /**
      * 解析工具调用结果
      */
-    private fun parseToolCallResult(result: ToolCallResult): AiDecision {
+    private suspend fun parseToolCallResult(
+        result: ToolCallResult,
+        task: String,
+        screenState: ScreenState,
+        history: List<AgentStep>
+    ): AiDecision {
         // 优先处理工具调用
         if (result.hasToolCall && result.toolCall != null) {
+            Logger.i("Got tool call: ${result.toolCall.function.name}", TAG)
             return parseToolCall(result.toolCall, result.reasoning)
         }
         
         // 处理纯文本响应
         if (result.hasTextResponse && !result.textResponse.isNullOrBlank()) {
+            Logger.i("Got text response, parsing...", TAG)
             return parseTextResponse(result.textResponse, result.reasoning)
         }
         
-        // 空响应
-        return AiDecision(
-            thought = "AI没有返回有效操作",
-            action = AgentAction(
-                type = ActionType.FAILED,
-                description = "无法获取下一步操作",
-                resultMessage = "AI响应为空"
-            )
-        )
+        // 空响应 - 自动降级到普通模式重试
+        Logger.w("Empty response from Function Calling, falling back", TAG)
+        fcFailCount++
+        
+        if (fcFailCount >= MAX_FC_FAILS) {
+            useFunctionCalling = false
+            fcFailCount = 0
+        }
+        
+        // 降级重试
+        return decide(task, screenState, history)
     }
 
     /**

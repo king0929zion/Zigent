@@ -172,26 +172,56 @@ class AiClient(private val settings: AiSettings) {
                 return Result.failure(Exception("API error: ${toolResponse.error.message}"))
             }
 
+            // 检查响应是否为空
+            if (responseBody.isBlank()) {
+                Logger.e("API returned empty response body", TAG)
+                return Result.failure(Exception("API响应为空"))
+            }
+
+            val toolResponse = try {
+                gson.fromJson(responseBody, ToolResponse::class.java)
+            } catch (e: Exception) {
+                Logger.e("Failed to parse API response: ${responseBody.take(500)}", e, TAG)
+                return Result.failure(Exception("无法解析API响应: ${e.message}"))
+            }
+            
+            if (toolResponse == null) {
+                Logger.e("Parsed response is null", TAG)
+                return Result.failure(Exception("API响应解析为空"))
+            }
+            
+            if (toolResponse.error != null) {
+                val errorMsg = toolResponse.error.message ?: "未知错误"
+                Logger.e("API error: $errorMsg", TAG)
+                return Result.failure(Exception("API错误: $errorMsg"))
+            }
+
             val choice = toolResponse.choices?.firstOrNull()
-            val reasoning = choice?.message?.reasoningContent
+            if (choice == null) {
+                Logger.w("No choices in response", TAG)
+                // 返回空结果而不是失败，让调用方决定如何处理
+                return Result.success(ToolCallResult.empty())
+            }
+            
+            val reasoning = choice.message?.reasoningContent
             
             // 检查是否有工具调用
-            val toolCall = choice?.message?.toolCalls?.firstOrNull()
-            
-            if (toolCall != null) {
+            val toolCalls = choice.message?.toolCalls
+            if (!toolCalls.isNullOrEmpty()) {
+                val toolCall = toolCalls.first()
                 Logger.i("Tool call: ${toolCall.function.name}(${toolCall.function.arguments})", TAG)
                 return Result.success(ToolCallResult.fromToolCall(toolCall, reasoning))
             }
             
-            // 没有工具调用，可能是普通回复
-            val content = choice?.message?.content
+            // 没有工具调用，检查普通回复
+            val content = choice.message?.content
             if (!content.isNullOrBlank()) {
-                Logger.d("No tool call, text response: ${content.take(200)}", TAG)
+                Logger.d("Text response (no tool call): ${content.take(200)}", TAG)
                 return Result.success(ToolCallResult.fromText(content, reasoning))
             }
             
-            // 空响应
-            Logger.w("Empty response from API", TAG)
+            // 完全空响应
+            Logger.w("Empty response: no tool_calls and no content", TAG)
             return Result.success(ToolCallResult.empty())
 
         } catch (e: Exception) {
