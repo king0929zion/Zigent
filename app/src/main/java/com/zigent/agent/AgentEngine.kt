@@ -117,6 +117,12 @@ class AgentEngine @Inject constructor(
     // AI设置
     private var aiSettings: AiSettings? = null
     
+    // 操作验证器
+    private val actionVerifier = ActionVerifier()
+    
+    // 任务分解器
+    private val taskDecomposer = TaskDecomposer()
+    
     // Shizuku 管理器
     private val shizukuManager: ShizukuManager by lazy {
         ShizukuManager.getInstance(context)
@@ -127,6 +133,12 @@ class AgentEngine @Inject constructor(
     
     // 是否使用视觉模式（带截图）
     var useVisionMode: Boolean = true
+    
+    // 是否启用操作验证
+    var enableActionVerification: Boolean = true
+    
+    // 是否启用任务分解
+    var enableTaskDecomposition: Boolean = true
 
     /**
      * 配置AI设置
@@ -340,8 +352,25 @@ class AgentEngine @Inject constructor(
         _state.value = AgentState.PLANNING
         callback?.onStateChanged(AgentState.PLANNING)
         
-        // 如果需要打开应用，先打开
-        analysis.targetApp?.let { appName ->
+        // 任务分解（如果启用）
+        var decomposedTask: DecomposedTask? = null
+        if (enableTaskDecomposition) {
+            decomposedTask = taskDecomposer.decompose(task)
+            Logger.i("Task decomposed: ${decomposedTask.subTasks.size} sub-tasks, complexity: ${decomposedTask.complexity}", TAG)
+            
+            // 显示任务分解概要
+            callback?.onProgress("分析任务: ${decomposedTask.complexity.name}, 预计${decomposedTask.estimatedSteps}步")
+            
+            // 如果需要用户输入，询问
+            if (decomposedTask.requiresUserInput) {
+                Logger.i("Task requires user input", TAG)
+                // 这里可以触发用户输入，但目前先继续执行
+            }
+        }
+        
+        // 如果需要打开应用，先打开（优先使用分解结果中的目标应用）
+        val targetApp = decomposedTask?.targetApp ?: analysis.targetApp
+        targetApp?.let { appName ->
             callback?.onProgress("正在打开 $appName...")
             val openAction = AgentAction(
                 type = ActionType.OPEN_APP,
@@ -516,24 +545,62 @@ class AgentEngine @Inject constructor(
             callback?.onProgress("执行: ${decision.action.description}")
             val result = actionExecutor.execute(decision.action)
             
-            // 5. 记录步骤
+            // 5. 操作验证（如果启用）
+            var verificationResult: VerificationResult? = null
+            var finalSuccess = result.success
+            var finalErrorMessage = result.errorMessage
+            
+            if (enableActionVerification && result.success) {
+                // 等待页面响应
+                delay(AiConfig.ACTION_WAIT_TIME)
+                
+                // 获取执行后的屏幕状态
+                val afterState = try {
+                    captureScreen()
+                } catch (e: Exception) {
+                    Logger.e("Failed to capture screen after action", e, TAG)
+                    null
+                }
+                
+                if (afterState != null) {
+                    verificationResult = actionVerifier.verify(decision.action, screenState, afterState)
+                    
+                    // 如果验证失败且置信度低，标记为失败
+                    if (!verificationResult.success && verificationResult.confidence < 0.5f) {
+                        finalSuccess = false
+                        finalErrorMessage = verificationResult.message
+                        Logger.w("Action verification failed: ${verificationResult.message}", TAG)
+                        
+                        // 给出建议
+                        verificationResult.suggestion?.let { suggestion ->
+                            Logger.i("Suggestion: $suggestion", TAG)
+                        }
+                    } else {
+                        Logger.i("Action verified: ${verificationResult.message} (confidence: ${verificationResult.confidence})", TAG)
+                    }
+                }
+            }
+            
+            // 6. 记录步骤
             val step = AgentStep(
                 stepNumber = stepCount,
                 screenStateBefore = screenState.screenDescription,
                 action = decision.action,
-                screenStateAfter = null,
-                success = result.success,
-                errorMessage = result.errorMessage
+                screenStateAfter = verificationResult?.message,
+                success = finalSuccess,
+                errorMessage = finalErrorMessage
             )
             executionHistory.add(step)
             
-            // 6. 处理执行结果
-            if (result.success) {
+            // 7. 处理执行结果
+            if (finalSuccess) {
                 consecutiveErrors = 0
-                callback?.onStepCompleted(stepCount, true, result.message)
+                val message = verificationResult?.message ?: result.message
+                callback?.onStepCompleted(stepCount, true, message)
+                lastActionWasVlm = false  // 成功执行非 VLM 操作后重置
             } else {
                 consecutiveErrors++
-                callback?.onStepCompleted(stepCount, false, result.errorMessage ?: "执行失败")
+                callback?.onStepCompleted(stepCount, false, finalErrorMessage ?: "执行失败")
                 
                 // 连续错误过多则终止
                 if (consecutiveErrors >= 3) {
@@ -686,6 +753,22 @@ class AgentEngine @Inject constructor(
      * 获取执行历史
      */
     fun getExecutionHistory(): List<AgentStep> = executionHistory.toList()
+    
+    /**
+     * 预览任务分解（不执行）
+     * 用于在执行前显示任务将如何被分解
+     */
+    fun previewTaskDecomposition(task: String): DecomposedTask {
+        return taskDecomposer.decompose(task)
+    }
+    
+    /**
+     * 获取任务分解概要文本
+     */
+    fun getTaskDecompositionSummary(task: String): String {
+        val decomposed = taskDecomposer.decompose(task)
+        return taskDecomposer.generateTaskSummary(decomposed)
+    }
 
     /**
      * 获取任务历史
