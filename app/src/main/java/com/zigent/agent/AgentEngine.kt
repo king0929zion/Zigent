@@ -569,12 +569,12 @@ class AgentEngine @Inject constructor(
                 } ?: run {
                     Logger.w("Action execution timeout", TAG)
                     callback?.onProgress("操作执行超时")
-                    com.zigent.agent.ActionResult(false, "操作超时", "执行超时，请重试")
+                    ExecutionResult(false, "操作超时", "执行超时，请重试")
                 }
             } catch (e: Exception) {
                 Logger.e("Action execution failed", e, TAG)
                 callback?.onProgress("操作执行失败: ${e.message?.take(50)}")
-                com.zigent.agent.ActionResult(false, null, e.message)
+                ExecutionResult(false, "", e.message)
             }
             
             // 5. 操作验证（如果启用）
