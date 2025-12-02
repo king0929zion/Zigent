@@ -25,12 +25,13 @@ class FloatingTextPanel(context: Context) : View(context) {
     companion object {
         private const val TAG = "FloatingTextPanel"
         
-        // 面板尺寸
-        const val PANEL_WIDTH = 280  // dp
-        const val PANEL_HEIGHT = 120 // dp
+        // 面板尺寸（优化：更大的尺寸）
+        const val PANEL_WIDTH = 340  // dp（增加60dp）
+        const val PANEL_HEIGHT = 180 // dp（增加60dp）
         const val PANEL_MARGIN = 16  // dp
-        const val CORNER_RADIUS = 16f // dp
-        const val PADDING = 16 // dp
+        const val CORNER_RADIUS = 20f // dp（更圆润）
+        const val PADDING = 20 // dp（更大的内边距）
+        const val LINE_SPACING = 6 // dp（行间距）
         
         // 动画时长
         private const val ANIMATION_DURATION = 200L
@@ -43,6 +44,7 @@ class FloatingTextPanel(context: Context) : View(context) {
     private val panelMarginPx = (PANEL_MARGIN * density).toInt()
     private val cornerRadiusPx = CORNER_RADIUS * density
     private val paddingPx = (PADDING * density).toInt()
+    private val lineSpacingPx = (LINE_SPACING * density)
     
     // 画笔
     private val backgroundPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -52,18 +54,18 @@ class FloatingTextPanel(context: Context) : View(context) {
     
     private val titlePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
         color = ContextCompat.getColor(context, R.color.panel_title)
-        textSize = 14 * density
+        textSize = 17 * density  // 增大：14 -> 17
         isFakeBoldText = true
     }
     
     private val textPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
         color = ContextCompat.getColor(context, R.color.panel_text)
-        textSize = 16 * density
+        textSize = 18 * density  // 增大：16 -> 18
     }
     
     private val hintPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
         color = ContextCompat.getColor(context, R.color.panel_hint)
-        textSize = 13 * density
+        textSize = 15 * density  // 增大：13 -> 15
     }
     
     // 状态
@@ -257,35 +259,74 @@ class FloatingTextPanel(context: Context) : View(context) {
         val titleY = paddingPx + titlePaint.textSize
         canvas.drawText(currentTitle, paddingPx.toFloat(), titleY, titlePaint)
         
-        // 绘制主文字（支持多行）
+        // 绘制主文字（智能多行换行）
         if (currentText.isNotEmpty()) {
-            val textY = titleY + paddingPx + textPaint.textSize
-            val maxWidth = width - paddingPx * 2
+            val maxWidth = (width - paddingPx * 2).toFloat()
+            val lineSpacingPx = (LINE_SPACING * density)
+            val lineHeight = textPaint.textSize + lineSpacingPx
+            var textY = titleY + paddingPx * 0.8f + textPaint.textSize
             
-            // 简单的文字截断
-            val displayText = if (textPaint.measureText(currentText) > maxWidth * 2) {
-                val endIndex = currentText.length.coerceAtMost(50)
-                currentText.substring(0, endIndex) + "..."
-            } else {
-                currentText
-            }
+            // 智能换行：按可用宽度分割文字
+            val lines = wrapText(currentText, maxWidth, textPaint)
             
-            // 绘制第一行
-            val firstLine = displayText.take(20)
-            canvas.drawText(firstLine, paddingPx.toFloat(), textY, textPaint)
+            // 计算最多可以显示几行（保留底部提示空间）
+            val availableHeight = height - textY - paddingPx - hintPaint.textSize - paddingPx * 0.5f
+            val maxLines = (availableHeight / lineHeight).toInt().coerceAtLeast(1)
             
-            // 如果有第二行
-            if (displayText.length > 20) {
-                val secondLine = displayText.drop(20).take(25)
-                canvas.drawText(secondLine, paddingPx.toFloat(), textY + textPaint.textSize + 4 * density, textPaint)
+            // 绘制文字行
+            lines.take(maxLines).forEachIndexed { index, line ->
+                val displayLine = if (index == maxLines - 1 && lines.size > maxLines) {
+                    // 最后一行如果文字被截断，添加省略号
+                    val ellipsis = "..."
+                    val ellipsisWidth = textPaint.measureText(ellipsis)
+                    var truncated = line
+                    while (textPaint.measureText(truncated) + ellipsisWidth > maxWidth && truncated.isNotEmpty()) {
+                        truncated = truncated.dropLast(1)
+                    }
+                    truncated + ellipsis
+                } else {
+                    line
+                }
+                
+                canvas.drawText(displayLine, paddingPx.toFloat(), textY, textPaint)
+                textY += lineHeight
             }
         }
         
-        // 绘制提示文字
+        // 绘制提示文字（居中底部）
         if (currentHint.isNotEmpty()) {
             val hintY = height - paddingPx.toFloat()
             canvas.drawText(currentHint, paddingPx.toFloat(), hintY, hintPaint)
         }
+    }
+    
+    /**
+     * 智能文字换行：根据可用宽度将文字分割成多行
+     */
+    private fun wrapText(text: String, maxWidth: Float, paint: TextPaint): List<String> {
+        val lines = mutableListOf<String>()
+        var currentLine = StringBuilder()
+        
+        // 按字符遍历
+        for (char in text) {
+            val testLine = currentLine.toString() + char
+            val testWidth = paint.measureText(testLine)
+            
+            if (testWidth > maxWidth && currentLine.isNotEmpty()) {
+                // 当前行已满，开始新行
+                lines.add(currentLine.toString())
+                currentLine = StringBuilder(char.toString())
+            } else {
+                currentLine.append(char)
+            }
+        }
+        
+        // 添加最后一行
+        if (currentLine.isNotEmpty()) {
+            lines.add(currentLine.toString())
+        }
+        
+        return lines
     }
 
     /**
