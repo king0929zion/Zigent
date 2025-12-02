@@ -39,7 +39,7 @@ interface SiliconFlowRecognitionCallback {
 
 /**
  * 硅基流动语音识别器
- * 使用 TeleAI/TeleSpeechASR 模型
+ * 使用 FunAudioLLM/SenseVoiceSmall 模型
  * API文档: https://docs.siliconflow.cn/cn/api-reference/audio/create-audio-transcriptions
  */
 class SiliconFlowSpeechRecognizer(private val context: Context) {
@@ -49,7 +49,7 @@ class SiliconFlowSpeechRecognizer(private val context: Context) {
         
         // API 配置
         private const val API_URL = "https://api.siliconflow.cn/v1/audio/transcriptions"
-        private const val MODEL = "TeleAI/TeleSpeechASR"
+        private const val MODEL = "FunAudioLLM/SenseVoiceSmall"
         
         // 录音配置
         private const val SAMPLE_RATE = 16000

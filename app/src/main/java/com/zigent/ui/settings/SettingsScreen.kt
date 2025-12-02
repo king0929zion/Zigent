@@ -270,7 +270,7 @@ fun SettingsScreen(
             ) {
                 Column(modifier = Modifier.padding(20.dp)) {
                     Text(
-                        text = "模型",
+                        text = "LLM 模型",
                         fontSize = 16.sp,
                         fontWeight = FontWeight.Medium,
                         color = Color.White
@@ -278,40 +278,89 @@ fun SettingsScreen(
                     
                     Spacer(modifier = Modifier.height(12.dp))
                     
-                    OutlinedTextField(
-                        value = model.ifEmpty {
-                            when (provider) {
-                                AiProvider.SILICONFLOW -> AiConfig.SILICONFLOW_MODEL
-                                AiProvider.OPENAI -> AiConfig.DEFAULT_MODEL_OPENAI
-                                AiProvider.CLAUDE -> AiConfig.DEFAULT_MODEL_CLAUDE
-                                AiProvider.CUSTOM -> ""
+                    // 硅基流动使用下拉选择
+                    if (provider == AiProvider.SILICONFLOW) {
+                        var modelExpanded by remember { mutableStateOf(false) }
+                        
+                        ExposedDropdownMenuBox(
+                            expanded = modelExpanded,
+                            onExpandedChange = { modelExpanded = it }
+                        ) {
+                            OutlinedTextField(
+                                value = AiConfig.SILICONFLOW_LLM_OPTIONS.find { it.first == model }?.second
+                                    ?: model.ifEmpty { "Qwen3 Next 80B (推荐)" },
+                                onValueChange = {},
+                                readOnly = true,
+                                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = modelExpanded) },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .menuAnchor(),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedTextColor = Color.White,
+                                    unfocusedTextColor = Color.White,
+                                    focusedBorderColor = Color(0xFF6366F1),
+                                    unfocusedBorderColor = Color(0xFF475569)
+                                )
+                            )
+                            
+                            ExposedDropdownMenu(
+                                expanded = modelExpanded,
+                                onDismissRequest = { modelExpanded = false }
+                            ) {
+                                AiConfig.SILICONFLOW_LLM_OPTIONS.forEach { (modelId, displayName) ->
+                                    DropdownMenuItem(
+                                        text = { Text(displayName) },
+                                        onClick = {
+                                            model = modelId
+                                            modelExpanded = false
+                                        }
+                                    )
+                                }
                             }
-                        },
-                        onValueChange = { model = it },
-                        placeholder = { Text("模型名称", color = Color(0xFF64748B)) },
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = Color.White,
-                            unfocusedTextColor = Color.White,
-                            focusedBorderColor = Color(0xFF6366F1),
-                            unfocusedBorderColor = Color(0xFF475569),
-                            cursorColor = Color(0xFF6366F1)
-                        ),
-                        singleLine = true
-                    )
-                    
-                    Spacer(modifier = Modifier.height(8.dp))
-                    
-                    Text(
-                        text = when (provider) {
-                            AiProvider.SILICONFLOW -> "默认: Qwen3-VL-235B (视觉模型)"
-                            AiProvider.OPENAI -> "推荐: gpt-4o, gpt-4o-mini"
-                            AiProvider.CLAUDE -> "推荐: claude-3-5-sonnet-20241022"
-                            AiProvider.CUSTOM -> "输入兼容OpenAI格式的模型名"
-                        },
-                        fontSize = 12.sp,
-                        color = Color(0xFF64748B)
-                    )
+                        }
+                        
+                        Spacer(modifier = Modifier.height(8.dp))
+                        
+                        Text(
+                            text = "当前模型: ${model.ifEmpty { AiConfig.SILICONFLOW_LLM_MODEL }}",
+                            fontSize = 12.sp,
+                            color = Color(0xFF64748B)
+                        )
+                    } else {
+                        // 其他提供商使用文本输入
+                        OutlinedTextField(
+                            value = model.ifEmpty {
+                                when (provider) {
+                                    AiProvider.OPENAI -> AiConfig.DEFAULT_MODEL_OPENAI
+                                    AiProvider.CLAUDE -> AiConfig.DEFAULT_MODEL_CLAUDE
+                                    else -> ""
+                                }
+                            },
+                            onValueChange = { model = it },
+                            placeholder = { Text("模型名称", color = Color(0xFF64748B)) },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedTextColor = Color.White,
+                                unfocusedTextColor = Color.White,
+                                focusedBorderColor = Color(0xFF6366F1),
+                                unfocusedBorderColor = Color(0xFF475569),
+                                cursorColor = Color(0xFF6366F1)
+                            ),
+                            singleLine = true
+                        )
+                        
+                        Spacer(modifier = Modifier.height(8.dp))
+                        
+                        Text(
+                            text = when (provider) {
+                                AiProvider.OPENAI -> "推荐: gpt-4o, gpt-4o-mini"
+                                AiProvider.CLAUDE -> "推荐: claude-3-5-sonnet-20241022"
+                                else -> "输入兼容OpenAI格式的模型名"
+                            },
+                            fontSize = 12.sp,
+                            color = Color(0xFF64748B)
+                        )
+                    }
                 }
             }
             
