@@ -308,57 +308,121 @@ class ActionDecider(
     ): String {
         val sb = StringBuilder()
         
-        sb.appendLine("## 任务")
+        // 任务描述
+        sb.appendLine("【用户任务】")
         sb.appendLine(task)
         sb.appendLine()
         
-        sb.appendLine("## 当前状态")
-        sb.appendLine("应用：${screenState.packageName}")
+        // 当前应用状态
+        sb.appendLine("【当前应用】")
+        val appName = getAppName(screenState.packageName)
+        sb.appendLine("$appName (${screenState.packageName})")
         screenState.activityName?.let { 
             sb.appendLine("页面：${it.substringAfterLast(".")}")
         }
         sb.appendLine()
         
-        // 屏幕元素列表
+        // 屏幕元素列表（更清晰的格式）
         if (screenState.uiElements.isNotEmpty()) {
-            sb.appendLine("## 屏幕元素")
-            sb.appendLine("| # | 类型 | 内容 | 坐标 |")
-            sb.appendLine("|---|------|------|------|")
+            sb.appendLine("【屏幕元素】可交互元素及其坐标：")
             
-            var validIndex = 0
+            var clickableCount = 0
+            var editableCount = 0
+            
             screenState.uiElements.forEach { elem ->
-                val content = elem.text.ifEmpty { elem.description }.take(25)
+                val content = elem.text.ifEmpty { elem.description }.take(30)
                 if (content.isNotEmpty() || elem.isClickable || elem.isEditable) {
-                    val type = when {
-                        elem.isEditable -> "输入框"
-                        elem.isScrollable -> "列表"
-                        elem.isClickable -> "按钮"
-                        else -> "文本"
+                    val icon = when {
+                        elem.isEditable -> {
+                            editableCount++
+                            "📝"
+                        }
+                        elem.isScrollable -> "📜"
+                        elem.isClickable -> {
+                            clickableCount++
+                            "🔘"
+                        }
+                        else -> "📄"
                     }
-                    val coords = "(${elem.bounds.centerX}, ${elem.bounds.centerY})"
-                    sb.appendLine("| $validIndex | $type | $content | $coords |")
-                    validIndex++
-                    if (validIndex >= 20) return@forEach
+                    sb.appendLine("$icon \"$content\" → 坐标(${elem.bounds.centerX}, ${elem.bounds.centerY})")
+                    if (clickableCount + editableCount >= 15) return@forEach
                 }
             }
+            sb.appendLine()
+            sb.appendLine("图例：🔘可点击 📝可输入 📜可滚动 📄文本")
+            sb.appendLine()
+        } else {
+            sb.appendLine("【屏幕元素】未检测到可交互元素")
             sb.appendLine()
         }
         
         // 历史操作
         if (history.isNotEmpty()) {
-            sb.appendLine("## 已执行操作")
+            sb.appendLine("【已执行步骤】")
             history.takeLast(5).forEachIndexed { index, step ->
-                val status = if (step.success) "✓" else "✗"
+                val status = if (step.success) "✅" else "❌"
                 sb.appendLine("${index + 1}. $status ${step.action.description}")
             }
             sb.appendLine()
         }
         
-        // 明确指示
-        sb.appendLine("## 请求")
-        sb.appendLine("分析当前屏幕，调用合适的工具执行下一步操作。")
+        // 明确指示 - 强调必须调用工具
+        sb.appendLine("【请求】")
+        sb.appendLine("根据以上信息，调用一个合适的工具执行下一步操作。")
+        sb.appendLine()
+        sb.appendLine("提示：")
+        if (screenState.uiElements.isEmpty()) {
+            sb.appendLine("- 屏幕上没有检测到元素，可能需要 wait 等待加载或 swipe_down 滚动")
+        }
+        if (history.isEmpty()) {
+            sb.appendLine("- 这是第一步，请从打开应用或点击目标元素开始")
+        } else {
+            val lastStep = history.last()
+            if (!lastStep.success) {
+                sb.appendLine("- 上一步操作失败了，请尝试其他方法")
+            }
+        }
+        sb.appendLine("- 必须调用一个工具函数，不要只输出文字")
         
         return sb.toString()
+    }
+    
+    /**
+     * 根据包名获取应用名称
+     */
+    private fun getAppName(packageName: String): String {
+        return when {
+            packageName.contains("tencent.mm") -> "微信"
+            packageName.contains("tencent.mobileqq") -> "QQ"
+            packageName.contains("taobao") -> "淘宝"
+            packageName.contains("tmall") -> "天猫"
+            packageName.contains("jd") -> "京东"
+            packageName.contains("meituan") -> "美团"
+            packageName.contains("dianping") -> "大众点评"
+            packageName.contains("alipay") -> "支付宝"
+            packageName.contains("douyin") -> "抖音"
+            packageName.contains("kuaishou") -> "快手"
+            packageName.contains("weibo") -> "微博"
+            packageName.contains("bilibili") -> "哔哩哔哩"
+            packageName.contains("netease.cloudmusic") -> "网易云音乐"
+            packageName.contains("kugou") -> "酷狗音乐"
+            packageName.contains("qqmusic") -> "QQ音乐"
+            packageName.contains("baidu.searchbox") -> "百度"
+            packageName.contains("chrome") -> "Chrome"
+            packageName.contains("browser") -> "浏览器"
+            packageName.contains("settings") -> "设置"
+            packageName.contains("launcher") -> "桌面"
+            packageName.contains("dialer") -> "电话"
+            packageName.contains("contacts") -> "联系人"
+            packageName.contains("messaging") || packageName.contains("mms") -> "短信"
+            packageName.contains("camera") -> "相机"
+            packageName.contains("gallery") || packageName.contains("photos") -> "相册"
+            packageName.contains("calendar") -> "日历"
+            packageName.contains("clock") || packageName.contains("alarm") -> "时钟"
+            packageName.contains("calculator") -> "计算器"
+            packageName.contains("filemanager") || packageName.contains("files") -> "文件管理"
+            else -> packageName.substringAfterLast(".")
+        }
     }
 
     /**
