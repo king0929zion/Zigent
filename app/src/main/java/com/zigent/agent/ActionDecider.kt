@@ -2,6 +2,7 @@ package com.zigent.agent
 
 import com.google.gson.Gson
 import com.google.gson.JsonObject
+import com.google.gson.JsonSyntaxException
 import com.zigent.agent.models.*
 import com.zigent.ai.AiClient
 import com.zigent.ai.AiSettings
@@ -15,50 +16,70 @@ import kotlinx.coroutines.withContext
  * 操作决策器
  * 
  * 双模型架构：
- * - 主 LLM (DeepSeek-V3.2-Exp): 任务理解 + Function Calling
- * - 辅助 VLM (Qwen3-Omni-Captioner): 图片描述（当调用 describe_screen 时）
+ * - 主 LLM: 任务理解 + Function Calling
+ * - 辅助 VLM: 图片描述（当调用 describe_screen 时）
  * 
- * 工作流程：
- * 1. 收集屏幕元素信息（无障碍服务）
- * 2. 构建提示词发送给 LLM
- * 3. LLM 返回工具调用
- * 4. 如果是 describe_screen，调用 VLM 获取图片描述，再让 LLM 继续决策
- * 5. 返回最终决策
+ * 职责：
+ * 1. 构建符合规范的提示词
+ * 2. 调用 LLM 进行工具调用
+ * 3. 严格解析工具调用结果
+ * 4. 验证参数完整性
+ * 5. 返回标准化的 AiDecision
  */
 class ActionDecider(
     private val aiSettings: AiSettings
 ) {
     companion object {
         private const val TAG = "ActionDecider"
+        
+        // 工具名称常量，避免拼写错误
+        object Tools {
+            const val TAP = "tap"
+            const val LONG_PRESS = "long_press"
+            const val DOUBLE_TAP = "double_tap"
+            const val SWIPE_UP = "swipe_up"
+            const val SWIPE_DOWN = "swipe_down"
+            const val SWIPE_LEFT = "swipe_left"
+            const val SWIPE_RIGHT = "swipe_right"
+            const val SWIPE = "swipe"
+            const val SCROLL = "scroll"
+            const val INPUT_TEXT = "input_text"
+            const val CLEAR_TEXT = "clear_text"
+            const val PRESS_BACK = "press_back"
+            const val PRESS_HOME = "press_home"
+            const val PRESS_RECENT = "press_recent"
+            const val PRESS_ENTER = "press_enter"
+            const val OPEN_APP = "open_app"
+            const val CLOSE_APP = "close_app"
+            const val DESCRIBE_SCREEN = "describe_screen"
+            const val WAIT = "wait"
+            const val FINISHED = "finished"
+            const val FAILED = "failed"
+            const val ASK_USER = "ask_user"
+        }
     }
 
     private val aiClient = AiClient(aiSettings)
     private val gson = Gson()
     
-    // VLM 图片描述缓存（避免重复调用）
+    // VLM 图片描述缓存
     private var lastScreenDescription: String? = null
     private var lastScreenDescriptionTime: Long = 0
-    private val DESCRIPTION_CACHE_TIMEOUT = 5000L  // 5秒缓存
+    private val DESCRIPTION_CACHE_TIMEOUT = 5000L
     
-    // 设备上下文（已安装应用、初始屏幕状态等）
+    // 设备上下文
     private var deviceContext: DeviceContext? = null
     
     // VLM 可用性状态
     private var vlmAvailable = true
     private var vlmFailureCount = 0
-    private val VLM_MAX_FAILURES = 3  // 连续失败 3 次后禁用 VLM
+    private val VLM_MAX_FAILURES = 3
     
-    /**
-     * 设备上下文信息
-     */
     data class DeviceContext(
-        val installedAppsText: String,     // 已安装应用列表文本
-        val initialScreenState: String?    // 初始屏幕状态描述
+        val installedAppsText: String,
+        val initialScreenState: String?
     )
     
-    /**
-     * 设置设备上下文
-     */
     fun setDeviceContext(context: DeviceContext) {
         deviceContext = context
         Logger.i("Device context set: apps=${context.installedAppsText.length} chars", TAG)
@@ -66,24 +87,25 @@ class ActionDecider(
 
     /**
      * 主决策入口
-     * 使用 LLM + 屏幕元素信息进行决策
+     * 
+     * @param task 用户任务描述
+     * @param screenState 当前屏幕状态
+     * @param history 执行历史
+     * @param vlmDescription VLM 提供的屏幕描述（可选）
+     * @return AiDecision 决策结果
      */
     suspend fun decide(
         task: String,
         screenState: ScreenState,
         history: List<AgentStep>,
-        vlmDescription: String? = null  // VLM 提供的额外屏幕描述
+        vlmDescription: String? = null
     ): AiDecision = withContext(Dispatchers.IO) {
         Logger.i("=== ActionDecider.decide ===", TAG)
-        Logger.i("Task: $task", TAG)
-        Logger.i("UI elements count: ${screenState.uiElements.size}", TAG)
-        Logger.i("Has VLM description: ${vlmDescription != null}", TAG)
+        Logger.d("Task: $task", TAG)
+        Logger.d("Elements: ${screenState.uiElements.size}, VLM: ${vlmDescription != null}", TAG)
         
-        // 构建提示词
         val prompt = buildPrompt(task, screenState, history, vlmDescription)
-        Logger.d("Prompt: ${prompt.take(1500)}...", TAG)
         
-        // 调用 LLM 进行工具调用
         val result = aiClient.chatWithTools(
             prompt = prompt,
             tools = AgentTools.ALL_TOOLS,
@@ -91,25 +113,13 @@ class ActionDecider(
         )
         
         result.fold(
-            onSuccess = { toolResult ->
-                parseToolCallResult(toolResult, task, screenState, history)
-            },
-            onFailure = { error ->
-                Logger.e("LLM decision failed", error, TAG)
-                AiDecision(
-                    thought = "AI调用失败: ${error.message}",
-                    action = AgentAction(
-                        type = ActionType.FAILED,
-                        description = "AI服务异常",
-                        resultMessage = error.message
-                    )
-                )
-            }
+            onSuccess = { toolResult -> parseToolCallResult(toolResult) },
+            onFailure = { error -> handleError(error) }
         )
     }
 
     /**
-     * 兼容旧接口 - 带图片决策
+     * 兼容旧接口
      */
     suspend fun decideWithVision(
         task: String,
@@ -117,83 +127,59 @@ class ActionDecider(
         history: List<AgentStep>
     ): AiDecision = decide(task, screenState, history)
 
-    /**
-     * 检查 VLM 是否可用
-     */
     fun isVlmAvailable(): Boolean = vlmAvailable
     
-    /**
-     * 手动重置 VLM 可用状态
-     */
     fun resetVlmAvailability() {
         vlmAvailable = true
         vlmFailureCount = 0
-        Logger.i("VLM availability reset", TAG)
     }
     
     /**
      * 调用 VLM 获取屏幕描述
-     * 如果 VLM 不可用，返回 null 并提示 Agent 使用元素列表
      */
     suspend fun describeScreen(
         imageBase64: String?,
         context: String? = null
     ): String? = withContext(Dispatchers.IO) {
-        // 如果 VLM 已被禁用，返回降级提示
         if (!vlmAvailable) {
-            Logger.w("VLM is disabled due to repeated failures, using element list only", TAG)
-            return@withContext "[VLM不可用] 视觉模型暂时无法使用，请仅根据屏幕元素列表进行操作决策。"
+            return@withContext "[VLM不可用] 请根据屏幕元素列表进行操作。"
         }
         
         if (imageBase64.isNullOrEmpty()) {
-            Logger.w("No screenshot available for VLM", TAG)
             return@withContext null
         }
         
-        // 检查缓存
+        // 缓存检查
         val now = System.currentTimeMillis()
         if (lastScreenDescription != null && (now - lastScreenDescriptionTime) < DESCRIPTION_CACHE_TIMEOUT) {
-            Logger.i("Using cached VLM description", TAG)
             return@withContext lastScreenDescription
         }
-        
-        Logger.i("=== Calling VLM for screen description ===", TAG)
         
         val result = aiClient.describeImage(imageBase64, context)
         
         result.fold(
             onSuccess = { description ->
-                // VLM 调用成功，重置失败计数
                 vlmFailureCount = 0
                 lastScreenDescription = description
                 lastScreenDescriptionTime = now
-                Logger.i("VLM description obtained: ${description.take(200)}...", TAG)
                 description
             },
             onFailure = { error ->
-                // VLM 调用失败，增加失败计数
                 vlmFailureCount++
-                Logger.e("VLM description failed (failure count: $vlmFailureCount)", error, TAG)
-                
-                // 连续失败达到阈值，禁用 VLM
                 if (vlmFailureCount >= VLM_MAX_FAILURES) {
                     vlmAvailable = false
-                    Logger.w("VLM disabled after $VLM_MAX_FAILURES consecutive failures", TAG)
-                    return@withContext "[VLM不可用] 视觉模型连续失败，已切换到仅元素列表模式。请根据屏幕元素信息进行操作。"
+                    "[VLM不可用] 视觉模型连续失败，请使用元素列表。"
+                } else {
+                    null
                 }
-                
-                null
             }
         )
     }
 
     /**
      * 简单对话模式
-     * 不需要操作手机时使用
      */
     suspend fun simpleChat(task: String): String = withContext(Dispatchers.IO) {
-        Logger.i("Simple chat: $task", TAG)
-        
         val messages = listOf(
             com.zigent.ai.models.ChatMessage(
                 com.zigent.ai.models.MessageRole.USER,
@@ -201,44 +187,31 @@ class ActionDecider(
             )
         )
         
-        val result = aiClient.chat(
+        aiClient.chat(
             messages = messages,
             systemPrompt = "你是Zigent，一个友好的AI助手。请简洁地回答用户的问题。"
-        )
-        
-        result.fold(
-            onSuccess = { it },
-            onFailure = { "抱歉，我暂时无法回答这个问题。" }
-        )
+        ).getOrDefault("抱歉，我暂时无法回答这个问题。")
     }
 
     /**
      * 分析任务类型
      */
     suspend fun analyzeTask(task: String): TaskAnalysis = withContext(Dispatchers.IO) {
-        Logger.d("Analyzing task: $task", TAG)
-        
-        // 简单规则判断
         val lowerTask = task.lowercase()
         
-        // 检查是否是简单对话
         val isSimpleChat = lowerTask.length < 20 && (
             lowerTask.contains("你好") ||
             lowerTask.contains("谢谢") ||
             lowerTask.contains("再见") ||
             lowerTask.startsWith("?") ||
-            lowerTask.startsWith("？") ||
-            lowerTask.contains("什么是") ||
-            lowerTask.contains("介绍一下")
+            lowerTask.startsWith("？")
         )
         
-        // 检查目标应用（简单关键词匹配）
         val appKeywords = listOf(
-            "微信", "wechat", "支付宝", "alipay", "淘宝", "taobao", 
-            "京东", "jd", "抖音", "douyin", "快手", "b站", "bilibili",
-            "微博", "weibo", "美团", "饿了么", "滴滴", "qq", "设置"
+            "微信", "支付宝", "淘宝", "京东", "抖音", "快手", 
+            "b站", "微博", "美团", "饿了么", "滴滴", "qq", "设置"
         )
-        val targetApp = appKeywords.find { lowerTask.contains(it.lowercase()) }
+        val targetApp = appKeywords.find { lowerTask.contains(it) }
         
         TaskAnalysis(
             originalTask = task,
@@ -246,6 +219,10 @@ class ActionDecider(
             isSimpleChat = isSimpleChat,
             targetApp = targetApp
         )
+    }
+
+    suspend fun testConnection(): Boolean {
+        return aiClient.testConnection().getOrDefault(false)
     }
 
     // ==================== 私有方法 ====================
@@ -259,198 +236,212 @@ class ActionDecider(
         history: List<AgentStep>,
         vlmDescription: String?
     ): String {
-        val sb = StringBuilder()
-        
-        // 设备上下文（首次执行时的应用列表和初始屏幕）
-        deviceContext?.let { ctx ->
-            // 已安装应用（帮助 AI 知道可以打开哪些应用）
-            if (ctx.installedAppsText.isNotEmpty()) {
-                sb.appendLine(ctx.installedAppsText)
-                sb.appendLine()
-            }
-            
-            // 初始屏幕状态（如果是第一步且有初始状态）
-            if (history.isEmpty() && !ctx.initialScreenState.isNullOrBlank()) {
-                sb.appendLine("## 初始屏幕状态")
-                sb.appendLine(ctx.initialScreenState.take(500))
-                sb.appendLine()
-            }
-        }
-        
-        // 任务描述
-        sb.appendLine("## 用户任务")
-        sb.appendLine(task)
-        sb.appendLine()
-        
-        // 当前应用
-        sb.appendLine("## 当前状态")
-        sb.appendLine("应用: ${com.zigent.utils.AppUtils.getAppName(screenState.packageName)}")
-        screenState.activityName?.let { 
-            sb.appendLine("页面: ${it.substringAfterLast(".")}")
-        }
-        sb.appendLine()
-        
-        // 屏幕元素列表（主要信息源）
-        sb.appendLine("## 屏幕元素")
-        if (screenState.uiElements.isNotEmpty()) {
-            screenState.uiElements.take(30).forEach { elem ->
-                val content = elem.text.ifEmpty { elem.description }.take(40)
-                if (content.isNotEmpty() || elem.isClickable || elem.isEditable || elem.isScrollable) {
-                    val icon = when {
-                        elem.isEditable -> "📝"
-                        elem.isClickable -> "🔘"
-                        elem.isScrollable -> "📜"
-                        else -> "📄"
-                    }
-                    val coords = "(${elem.bounds.centerX}, ${elem.bounds.centerY})"
-                    sb.appendLine("$icon \"$content\" $coords")
+        return buildString {
+            // 设备上下文
+            deviceContext?.let { ctx ->
+                if (ctx.installedAppsText.isNotEmpty()) {
+                    appendLine(ctx.installedAppsText)
+                    appendLine()
+                }
+                if (history.isEmpty() && !ctx.initialScreenState.isNullOrBlank()) {
+                    appendLine("## 初始屏幕状态")
+                    appendLine(ctx.initialScreenState.take(500))
+                    appendLine()
                 }
             }
-            sb.appendLine()
-            sb.appendLine("图例: 🔘可点击 📝可输入 📜可滚动 📄文本")
-        } else {
-            sb.appendLine("（未检测到可交互元素）")
-        }
-        sb.appendLine()
-        
-        // VLM 图片描述（如果有）
-        if (!vlmDescription.isNullOrBlank()) {
-            sb.appendLine("## 屏幕视觉描述 (VLM)")
-            sb.appendLine(vlmDescription.take(500))
-            sb.appendLine()
-        }
-        
-        // 历史操作
-        if (history.isNotEmpty()) {
-            sb.appendLine("## 已执行步骤")
-            history.takeLast(5).forEachIndexed { index, step ->
-                val status = if (step.success) "✓" else "✗"
-                sb.appendLine("${index + 1}. $status ${step.action.description}")
+            
+            // 任务
+            appendLine("## 用户任务")
+            appendLine(task)
+            appendLine()
+            
+            // 当前状态
+            appendLine("## 当前状态")
+            appendLine("应用: ${com.zigent.utils.AppUtils.getAppName(screenState.packageName)}")
+            screenState.activityName?.let { 
+                appendLine("页面: ${it.substringAfterLast(".")}")
             }
-            sb.appendLine()
+            appendLine()
+            
+            // 屏幕元素
+            appendLine("## 屏幕元素")
+            if (screenState.uiElements.isNotEmpty()) {
+                screenState.uiElements.take(30).forEach { elem ->
+                    val content = elem.text.ifEmpty { elem.description }.take(40)
+                    if (content.isNotEmpty() || elem.isClickable || elem.isEditable || elem.isScrollable) {
+                        val icon = when {
+                            elem.isEditable -> "📝"
+                            elem.isClickable -> "🔘"
+                            elem.isScrollable -> "📜"
+                            else -> "📄"
+                        }
+                        appendLine("$icon \"$content\" (${elem.bounds.centerX}, ${elem.bounds.centerY})")
+                    }
+                }
+                appendLine()
+                appendLine("图例: 🔘可点击 📝可输入 📜可滚动 📄文本")
+            } else {
+                appendLine("（未检测到可交互元素）")
+            }
+            appendLine()
+            
+            // VLM 描述
+            if (!vlmDescription.isNullOrBlank()) {
+                appendLine("## 屏幕视觉描述")
+                appendLine(vlmDescription.take(500))
+                appendLine()
+            }
+            
+            // 历史
+            if (history.isNotEmpty()) {
+                appendLine("## 已执行步骤")
+                history.takeLast(5).forEachIndexed { index, step ->
+                    val status = if (step.success) "✓" else "✗"
+                    appendLine("${index + 1}. $status ${step.action.description}")
+                }
+                appendLine()
+            }
+            
+            appendLine("## 请求")
+            appendLine("调用合适的工具执行下一步操作。")
         }
-        
-        // 指示
-        sb.appendLine("## 请求")
-        sb.appendLine("根据以上信息，调用合适的工具执行下一步操作。")
-        
-        return sb.toString()
     }
 
     /**
      * 解析工具调用结果
      */
-    private fun parseToolCallResult(
-        result: ToolCallResult,
-        task: String,
-        screenState: ScreenState,
-        history: List<AgentStep>
-    ): AiDecision {
+    private fun parseToolCallResult(result: ToolCallResult): AiDecision {
         Logger.i("=== Parsing Tool Result ===", TAG)
-        Logger.i("hasToolCall: ${result.hasToolCall}, hasText: ${result.hasTextResponse}", TAG)
         
-        // 优先处理工具调用
-        if (result.hasToolCall && result.toolCall != null) {
-            return parseToolCall(result.toolCall, result.reasoning)
+        return when (result) {
+            is ToolCallResult.Success -> {
+                Logger.i("✅ Tool call: ${result.toolCall.function.name}", TAG)
+                parseToolCall(result.toolCall, result.reasoning)
+            }
+            is ToolCallResult.TextOnly -> {
+                Logger.i("📝 Text response", TAG)
+                parseTextResponse(result.text, result.reasoning)
+            }
+            is ToolCallResult.Empty -> {
+                Logger.w("⚠️ Empty response", TAG)
+                createAskUserDecision("抱歉，我没有理解您的需求。请问您想让我做什么？")
+            }
+            is ToolCallResult.Error -> {
+                Logger.e("❌ Error: ${result.error}", TAG)
+                handleError(result.exception ?: Exception(result.error))
+            }
         }
-        
-        // 处理文本响应
-        if (result.hasTextResponse && !result.textResponse.isNullOrBlank()) {
-            return parseTextResponse(result.textResponse, result.reasoning)
-        }
-        
-        // 空响应
-        Logger.w("Empty response from LLM", TAG)
-        return AiDecision(
-            thought = "AI返回空响应",
-            action = AgentAction(
-                type = ActionType.ASK_USER,
-                description = "需要确认",
-                question = "抱歉，我没有理解您的需求。请问您想让我做什么？"
-            )
-        )
     }
 
     /**
-     * 解析工具调用
+     * 解析工具调用 - 严格模式
      */
     private fun parseToolCall(toolCall: ToolCall, reasoning: String?): AiDecision {
         val functionName = toolCall.function.name
-        val arguments = try {
-            gson.fromJson(toolCall.function.arguments, JsonObject::class.java)
-        } catch (e: Exception) {
-            Logger.e("Failed to parse arguments: ${toolCall.function.arguments}", e, TAG)
-            JsonObject()
+        val arguments = parseArguments(toolCall.function.arguments)
+        
+        if (arguments == null) {
+            Logger.e("Failed to parse arguments for $functionName", TAG)
+            return createErrorDecision("工具参数解析失败")
         }
         
-        Logger.i("Tool: $functionName", TAG)
-        Logger.d("Args: $arguments", TAG)
+        Logger.d("Tool: $functionName, Args: $arguments", TAG)
         
         val thought = reasoning ?: "执行: $functionName"
-        val description = arguments.get("description")?.asString ?: functionName
+        val description = arguments.getString("description") ?: functionName
         
         val action = when (functionName) {
-            // 点击
-            "tap" -> AgentAction(
-                type = ActionType.TAP,
-                description = description,
-                x = arguments.get("x")?.asInt,
-                y = arguments.get("y")?.asInt
-            )
+            // === 点击操作 ===
+            Tools.TAP -> {
+                val x = arguments.getInt("x")
+                val y = arguments.getInt("y")
+                if (x == null || y == null) {
+                    return createErrorDecision("tap 缺少必需参数 x 或 y")
+                }
+                AgentAction(
+                    type = ActionType.TAP,
+                    description = description,
+                    x = x,
+                    y = y
+                )
+            }
             
-            "long_press" -> AgentAction(
-                type = ActionType.LONG_PRESS,
-                description = description,
-                x = arguments.get("x")?.asInt,
-                y = arguments.get("y")?.asInt,
-                duration = arguments.get("duration")?.asInt ?: 800
-            )
+            Tools.LONG_PRESS -> {
+                val x = arguments.getInt("x")
+                val y = arguments.getInt("y")
+                if (x == null || y == null) {
+                    return createErrorDecision("long_press 缺少必需参数 x 或 y")
+                }
+                AgentAction(
+                    type = ActionType.LONG_PRESS,
+                    description = description,
+                    x = x,
+                    y = y,
+                    duration = arguments.getInt("duration") ?: 800
+                )
+            }
             
-            "double_tap" -> AgentAction(
-                type = ActionType.DOUBLE_TAP,
-                description = description,
-                x = arguments.get("x")?.asInt,
-                y = arguments.get("y")?.asInt
-            )
+            Tools.DOUBLE_TAP -> {
+                val x = arguments.getInt("x")
+                val y = arguments.getInt("y")
+                if (x == null || y == null) {
+                    return createErrorDecision("double_tap 缺少必需参数 x 或 y")
+                }
+                AgentAction(
+                    type = ActionType.DOUBLE_TAP,
+                    description = description,
+                    x = x,
+                    y = y
+                )
+            }
             
-            // 滑动
-            "swipe_up" -> AgentAction(
+            // === 滑动操作 ===
+            Tools.SWIPE_UP -> AgentAction(
                 type = ActionType.SWIPE_UP,
                 description = description,
-                swipeDistance = arguments.get("distance")?.asInt ?: 50
+                swipeDistance = arguments.getInt("distance") ?: 50
             )
             
-            "swipe_down" -> AgentAction(
+            Tools.SWIPE_DOWN -> AgentAction(
                 type = ActionType.SWIPE_DOWN,
                 description = description,
-                swipeDistance = arguments.get("distance")?.asInt ?: 50
+                swipeDistance = arguments.getInt("distance") ?: 50
             )
             
-            "swipe_left" -> AgentAction(
+            Tools.SWIPE_LEFT -> AgentAction(
                 type = ActionType.SWIPE_LEFT,
                 description = description,
-                swipeDistance = arguments.get("distance")?.asInt ?: 30
+                swipeDistance = arguments.getInt("distance") ?: 30
             )
             
-            "swipe_right" -> AgentAction(
+            Tools.SWIPE_RIGHT -> AgentAction(
                 type = ActionType.SWIPE_RIGHT,
                 description = description,
-                swipeDistance = arguments.get("distance")?.asInt ?: 30
+                swipeDistance = arguments.getInt("distance") ?: 30
             )
             
-            "swipe" -> AgentAction(
-                type = ActionType.SWIPE,
-                description = description,
-                startX = arguments.get("start_x")?.asInt,
-                startY = arguments.get("start_y")?.asInt,
-                endX = arguments.get("end_x")?.asInt,
-                endY = arguments.get("end_y")?.asInt,
-                duration = arguments.get("duration")?.asInt ?: 300
-            )
+            Tools.SWIPE -> {
+                val startX = arguments.getInt("start_x")
+                val startY = arguments.getInt("start_y")
+                val endX = arguments.getInt("end_x")
+                val endY = arguments.getInt("end_y")
+                if (startX == null || startY == null || endX == null || endY == null) {
+                    return createErrorDecision("swipe 缺少必需坐标参数")
+                }
+                AgentAction(
+                    type = ActionType.SWIPE,
+                    description = description,
+                    startX = startX,
+                    startY = startY,
+                    endX = endX,
+                    endY = endY,
+                    duration = arguments.getInt("duration") ?: 300
+                )
+            }
             
-            "scroll" -> {
-                val direction = arguments.get("direction")?.asString ?: "down"
-                val scrollType = when (direction) {
+            Tools.SCROLL -> {
+                val direction = arguments.getString("direction") ?: "down"
+                val scrollType = when (direction.lowercase()) {
                     "up" -> ActionType.SWIPE_UP
                     "down" -> ActionType.SWIPE_DOWN
                     "left" -> ActionType.SWIPE_LEFT
@@ -464,92 +455,112 @@ class ActionDecider(
                 )
             }
             
-            // 输入
-            "input_text" -> AgentAction(
-                type = ActionType.INPUT_TEXT,
-                description = description,
-                text = arguments.get("text")?.asString ?: ""
-            )
+            // === 输入操作 ===
+            Tools.INPUT_TEXT -> {
+                val text = arguments.getString("text")
+                if (text.isNullOrEmpty()) {
+                    return createErrorDecision("input_text 缺少 text 参数")
+                }
+                AgentAction(
+                    type = ActionType.INPUT_TEXT,
+                    description = description,
+                    text = text
+                )
+            }
             
-            "clear_text" -> AgentAction(
+            Tools.CLEAR_TEXT -> AgentAction(
                 type = ActionType.CLEAR_TEXT,
                 description = description
             )
             
-            // 按键
-            "press_back" -> AgentAction(
+            // === 按键操作 ===
+            Tools.PRESS_BACK -> AgentAction(
                 type = ActionType.PRESS_BACK,
                 description = description
             )
             
-            "press_home" -> AgentAction(
+            Tools.PRESS_HOME -> AgentAction(
                 type = ActionType.PRESS_HOME,
                 description = description
             )
             
-            "press_recent" -> AgentAction(
+            Tools.PRESS_RECENT -> AgentAction(
                 type = ActionType.PRESS_RECENT,
                 description = description
             )
             
-            "press_enter" -> AgentAction(
+            Tools.PRESS_ENTER -> AgentAction(
                 type = ActionType.PRESS_ENTER,
                 description = description
             )
             
-            // 应用
-            "open_app" -> AgentAction(
-                type = ActionType.OPEN_APP,
-                description = description,
-                appName = arguments.get("app")?.asString
-            )
+            // === 应用操作 ===
+            Tools.OPEN_APP -> {
+                val appName = arguments.getString("app")
+                if (appName.isNullOrEmpty()) {
+                    return createErrorDecision("open_app 缺少 app 参数")
+                }
+                AgentAction(
+                    type = ActionType.OPEN_APP,
+                    description = description,
+                    appName = appName
+                )
+            }
             
-            "close_app" -> AgentAction(
-                type = ActionType.CLOSE_APP,
-                description = description,
-                appName = arguments.get("app")?.asString
-            )
+            Tools.CLOSE_APP -> {
+                val appName = arguments.getString("app")
+                if (appName.isNullOrEmpty()) {
+                    return createErrorDecision("close_app 缺少 app 参数")
+                }
+                AgentAction(
+                    type = ActionType.CLOSE_APP,
+                    description = description,
+                    appName = appName
+                )
+            }
             
-            // 视觉 - 需要调用 VLM
-            "describe_screen" -> AgentAction(
+            // === 视觉操作 ===
+            Tools.DESCRIBE_SCREEN -> AgentAction(
                 type = ActionType.DESCRIBE_SCREEN,
                 description = description,
-                text = arguments.get("focus")?.asString
+                text = arguments.getString("focus")
             )
             
-            // 等待
-            "wait" -> AgentAction(
+            // === 等待操作 ===
+            Tools.WAIT -> AgentAction(
                 type = ActionType.WAIT,
                 description = description,
-                waitTime = arguments.get("time")?.asLong ?: 2000L
+                waitTime = arguments.getLong("time") ?: 2000L
             )
             
-            // 状态
-            "finished" -> AgentAction(
+            // === 任务状态 ===
+            Tools.FINISHED -> AgentAction(
                 type = ActionType.FINISHED,
-                description = description,
-                resultMessage = arguments.get("message")?.asString
+                description = "任务完成",
+                resultMessage = arguments.getString("message") ?: "任务已完成"
             )
             
-            "failed" -> AgentAction(
+            Tools.FAILED -> AgentAction(
                 type = ActionType.FAILED,
-                description = description,
-                resultMessage = arguments.get("message")?.asString
+                description = "任务失败",
+                resultMessage = arguments.getString("message") ?: "任务执行失败"
             )
             
-            "ask_user" -> AgentAction(
-                type = ActionType.ASK_USER,
-                description = description,
-                question = arguments.get("question")?.asString
-            )
+            Tools.ASK_USER -> {
+                val question = arguments.getString("question")
+                if (question.isNullOrEmpty()) {
+                    return createErrorDecision("ask_user 缺少 question 参数")
+                }
+                AgentAction(
+                    type = ActionType.ASK_USER,
+                    description = "询问用户",
+                    question = question
+                )
+            }
             
             else -> {
                 Logger.w("Unknown tool: $functionName", TAG)
-                AgentAction(
-                    type = ActionType.ASK_USER,
-                    description = "未知工具",
-                    question = "抱歉，我不确定如何执行这个操作。请问您能更详细地描述吗？"
-                )
+                return createAskUserDecision("不支持的操作：$functionName")
             }
         }
         
@@ -557,51 +568,33 @@ class ActionDecider(
     }
 
     /**
-     * 解析文本响应
+     * 解析参数 JSON
+     */
+    private fun parseArguments(argumentsJson: String): JsonObject? {
+        return try {
+            gson.fromJson(argumentsJson, JsonObject::class.java)
+        } catch (e: JsonSyntaxException) {
+            Logger.e("JSON parse error: ${e.message}", TAG)
+            null
+        } catch (e: Exception) {
+            Logger.e("Unexpected parse error: ${e.message}", TAG)
+            null
+        }
+    }
+
+    /**
+     * 解析文本响应 - 只处理合法的文本交互
      */
     private fun parseTextResponse(text: String, reasoning: String?): AiDecision {
         val thought = reasoning ?: text.take(100)
         val textLower = text.lowercase()
         
-        Logger.d("Parsing text: ${text.take(200)}", TAG)
-        
-        // 检测是否是工具调用指令被当作文本输出
-        // 例如: "tap 540 200" 或 "input_text xxx" 等
-        val toolCallPattern = Regex(
-            "(tap|click|input_text|swipe|scroll|press_back|press_home|open_app|long_press)\\s*[\\(（]?\\s*(\\d+)?",
-            RegexOption.IGNORE_CASE
-        )
-        if (toolCallPattern.containsMatchIn(text)) {
-            Logger.w("Detected tool-like text, asking AI to use proper tool call: $text", TAG)
-            return AiDecision(
-                thought = "AI 输出了工具调用文本而非正确的工具调用",
-                action = AgentAction(
-                    type = ActionType.WAIT,
-                    description = "等待 AI 正确响应",
-                    waitTime = 500L
-                )
-            )
-        }
-        
-        // 检测包含坐标的文本（可能是错误的工具调用输出）
-        val coordPattern = Regex("\\d{2,4}[,，\\s]+\\d{2,4}")
-        if (coordPattern.containsMatchIn(text) && text.length < 100) {
-            Logger.w("Detected coordinate-like text, might be malformed tool call: $text", TAG)
-            return AiDecision(
-                thought = "AI 输出了坐标文本而非正确的工具调用",
-                action = AgentAction(
-                    type = ActionType.WAIT,
-                    description = "等待 AI 正确响应",
-                    waitTime = 500L
-                )
-            )
-        }
+        Logger.d("Parsing text response: ${text.take(200)}", TAG)
         
         // 检查是否是问题
-        val isQuestion = text.contains("？") || text.contains("?") ||
-                         textLower.contains("请问") || textLower.contains("请提供")
-        
-        if (isQuestion) {
+        if (text.contains("？") || text.contains("?") ||
+            textLower.contains("请问") || textLower.contains("请提供") ||
+            textLower.contains("需要") || textLower.contains("确认")) {
             return AiDecision(
                 thought = thought,
                 action = AgentAction(
@@ -612,8 +605,9 @@ class ActionDecider(
             )
         }
         
-        // 检查完成
-        if (textLower.contains("完成") && !textLower.contains("无法")) {
+        // 检查完成状态
+        if (textLower.contains("已完成") || textLower.contains("完成了") ||
+            (textLower.contains("完成") && !textLower.contains("无法"))) {
             return AiDecision(
                 thought = thought,
                 action = AgentAction(
@@ -624,8 +618,9 @@ class ActionDecider(
             )
         }
         
-        // 检查失败
-        if (textLower.contains("无法") || textLower.contains("失败")) {
+        // 检查失败状态
+        if (textLower.contains("无法") || textLower.contains("失败") ||
+            textLower.contains("不能") || textLower.contains("错误")) {
             return AiDecision(
                 thought = thought,
                 action = AgentAction(
@@ -636,21 +631,77 @@ class ActionDecider(
             )
         }
         
-        // 默认当作需要确认
+        // 默认作为 AI 回复返回给用户
+        return createAskUserDecision(text.take(300), thought)
+    }
+
+    /**
+     * 处理错误
+     */
+    private fun handleError(error: Throwable): AiDecision {
+        Logger.e("Decision error: ${error.message}", error, TAG)
         return AiDecision(
-            thought = thought,
+            thought = "AI 调用失败: ${error.message}",
             action = AgentAction(
-                type = ActionType.ASK_USER,
-                description = "AI回复",
-                question = text.take(300)
+                type = ActionType.FAILED,
+                description = "AI 服务异常",
+                resultMessage = error.message ?: "未知错误"
             )
         )
     }
 
     /**
-     * 测试 AI 连接
+     * 创建询问用户的决策
      */
-    suspend fun testConnection(): Boolean {
-        return aiClient.testConnection().getOrDefault(false)
+    private fun createAskUserDecision(question: String, thought: String? = null): AiDecision {
+        return AiDecision(
+            thought = thought ?: "需要用户确认",
+            action = AgentAction(
+                type = ActionType.ASK_USER,
+                description = "询问用户",
+                question = question
+            )
+        )
+    }
+
+    /**
+     * 创建错误决策
+     */
+    private fun createErrorDecision(message: String): AiDecision {
+        Logger.e("Creating error decision: $message", TAG)
+        return AiDecision(
+            thought = "参数错误: $message",
+            action = AgentAction(
+                type = ActionType.ASK_USER,
+                description = "参数错误",
+                question = "操作参数不完整，请重新描述您的需求：$message"
+            )
+        )
+    }
+
+    // ==================== JsonObject 扩展方法 ====================
+    
+    private fun JsonObject.getString(key: String): String? {
+        return try {
+            get(key)?.asString?.takeIf { it.isNotBlank() }
+        } catch (e: Exception) {
+            null
+        }
+    }
+    
+    private fun JsonObject.getInt(key: String): Int? {
+        return try {
+            get(key)?.asInt
+        } catch (e: Exception) {
+            null
+        }
+    }
+    
+    private fun JsonObject.getLong(key: String): Long? {
+        return try {
+            get(key)?.asLong
+        } catch (e: Exception) {
+            null
+        }
     }
 }

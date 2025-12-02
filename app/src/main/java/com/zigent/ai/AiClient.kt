@@ -143,7 +143,12 @@ class AiClient(private val settings: AiSettings) {
 
     /**
      * 使用 LLM 进行工具调用（Function Calling）
-     * 主要决策入口 - 不需要图片
+     * 主要决策入口 - 标准化的工具调用流程
+     * 
+     * @param prompt 用户提示词
+     * @param tools 可用工具列表
+     * @param systemPrompt 系统提示词
+     * @return Result<ToolCallResult> 工具调用结果
      */
     suspend fun chatWithTools(
         prompt: String,
@@ -153,6 +158,7 @@ class AiClient(private val settings: AiSettings) {
         Logger.i("=== LLM Tool Call ===", TAG)
         
         try {
+            // 1. 构建消息列表
             val messages = buildList<Any> {
                 if (!systemPrompt.isNullOrBlank()) {
                     add(mapOf("role" to "system", "content" to systemPrompt))
@@ -160,11 +166,11 @@ class AiClient(private val settings: AiSettings) {
                 add(mapOf("role" to "user", "content" to prompt))
             }
             
-            // 使用 LLM 模型（支持 Function Calling）
+            // 2. 获取模型配置
             val llmModel = settings.model.ifBlank { AiConfig.SILICONFLOW_LLM_MODEL }
-            Logger.i("Using LLM model: $llmModel", TAG)
-            Logger.i("Tools count: ${tools.size}", TAG)
+            Logger.i("Model: $llmModel, Tools: ${tools.size}", TAG)
             
+            // 3. 构建请求
             val request = ToolRequest(
                 model = llmModel,
                 messages = messages,
@@ -174,6 +180,7 @@ class AiClient(private val settings: AiSettings) {
                 temperature = settings.temperature
             )
             
+            // 4. 获取 API 端点
             val baseUrl = when (settings.provider) {
                 AiProvider.SILICONFLOW -> SILICONFLOW_BASE_URL
                 AiProvider.OPENAI -> OPENAI_BASE_URL
@@ -181,6 +188,7 @@ class AiClient(private val settings: AiSettings) {
                 else -> SILICONFLOW_BASE_URL
             }.trimEnd('/')
             
+            // 5. 发送请求
             val httpRequest = Request.Builder()
                 .url("$baseUrl/chat/completions")
                 .addHeader("Authorization", "Bearer ${settings.apiKey}")
@@ -188,64 +196,77 @@ class AiClient(private val settings: AiSettings) {
                 .post(gson.toJson(request).toRequestBody("application/json".toMediaType()))
                 .build()
             
-            val requestJson = gson.toJson(request)
-            Logger.d("Request: ${requestJson.take(2000)}", TAG)
+            Logger.d("Request URL: $baseUrl/chat/completions", TAG)
             
             val response = httpClient.newCall(httpRequest).execute()
             val responseBody = response.body?.string() ?: ""
             
-            Logger.i("Response code: ${response.code}", TAG)
-            Logger.d("Response: ${responseBody.take(2000)}", TAG)
+            Logger.i("Response: ${response.code}", TAG)
+            Logger.d("Body: ${responseBody.take(1500)}", TAG)
             
+            // 6. 处理 HTTP 错误
             if (!response.isSuccessful) {
-                return@withContext Result.failure(Exception("LLM API error: ${response.code} - $responseBody"))
+                val errorMsg = "API Error ${response.code}: ${extractErrorMessage(responseBody)}"
+                Logger.e(errorMsg, TAG)
+                return@withContext Result.success(ToolCallResult.error(errorMsg))
             }
             
+            // 7. 处理空响应
             if (responseBody.isBlank()) {
-                return@withContext Result.failure(Exception("LLM返回空响应"))
+                return@withContext Result.success(ToolCallResult.empty(message = "API 返回空响应"))
             }
             
+            // 8. 解析响应
             val toolResponse = try {
                 gson.fromJson(responseBody, ToolResponse::class.java)
             } catch (e: Exception) {
-                Logger.e("Failed to parse response", e, TAG)
-                return@withContext Result.failure(Exception("无法解析响应: ${e.message}"))
+                Logger.e("JSON parse failed", e, TAG)
+                return@withContext Result.success(ToolCallResult.error("响应解析失败: ${e.message}", e))
             }
             
-            if (toolResponse?.error != null) {
-                return@withContext Result.failure(Exception("API错误: ${toolResponse.error.message}"))
+            // 9. 检查 API 错误
+            if (toolResponse.hasError()) {
+                val errorMsg = toolResponse.error?.message ?: "Unknown API error"
+                return@withContext Result.success(ToolCallResult.error("API 错误: $errorMsg"))
             }
             
-            val choice = toolResponse?.choices?.firstOrNull()
-            if (choice == null) {
-                Logger.w("No choices in response", TAG)
-                return@withContext Result.success(ToolCallResult.empty())
-            }
+            // 10. 提取推理内容
+            val reasoning = toolResponse.getReasoning()
             
-            val reasoning = choice.message?.reasoningContent
-            
-            // 检查工具调用
-            val toolCalls = choice.message?.toolCalls
-            if (!toolCalls.isNullOrEmpty()) {
-                val toolCall = toolCalls.first()
-                Logger.i("✅ Tool call: ${toolCall.function.name}", TAG)
-                Logger.d("Arguments: ${toolCall.function.arguments}", TAG)
+            // 11. 优先处理工具调用
+            val toolCall = toolResponse.getFirstToolCall()
+            if (toolCall != null) {
+                Logger.i("✅ Tool: ${toolCall.function.name}", TAG)
+                Logger.d("Args: ${toolCall.function.arguments}", TAG)
                 return@withContext Result.success(ToolCallResult.fromToolCall(toolCall, reasoning))
             }
             
-            // 纯文本响应
-            val content = choice.message?.content
-            if (!content.isNullOrBlank()) {
-                Logger.i("📝 Text response (no tool)", TAG)
-                return@withContext Result.success(ToolCallResult.fromText(content, reasoning))
+            // 12. 处理文本响应
+            val textContent = toolResponse.getTextContent()
+            if (textContent != null) {
+                Logger.i("📝 Text response", TAG)
+                return@withContext Result.success(ToolCallResult.fromText(textContent, reasoning))
             }
             
-            Logger.w("Empty response from LLM", TAG)
-            Result.success(ToolCallResult.empty())
+            // 13. 无有效响应
+            Logger.w("No valid response from LLM", TAG)
+            Result.success(ToolCallResult.empty(reasoning, "LLM 未返回工具调用或文本"))
             
         } catch (e: Exception) {
-            Logger.e("LLM tool call failed", e, TAG)
-            Result.failure(e)
+            Logger.e("Tool call exception", e, TAG)
+            Result.success(ToolCallResult.error("请求异常: ${e.message}", e))
+        }
+    }
+    
+    /**
+     * 从错误响应中提取错误信息
+     */
+    private fun extractErrorMessage(responseBody: String): String {
+        return try {
+            val errorResponse = gson.fromJson(responseBody, ToolResponse::class.java)
+            errorResponse?.error?.message ?: responseBody.take(200)
+        } catch (e: Exception) {
+            responseBody.take(200)
         }
     }
 
