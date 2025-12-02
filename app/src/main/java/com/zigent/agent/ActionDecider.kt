@@ -565,6 +565,38 @@ class ActionDecider(
         
         Logger.d("Parsing text: ${text.take(200)}", TAG)
         
+        // 检测是否是工具调用指令被当作文本输出
+        // 例如: "tap 540 200" 或 "input_text xxx" 等
+        val toolCallPattern = Regex(
+            "(tap|click|input_text|swipe|scroll|press_back|press_home|open_app|long_press)\\s*[\\(（]?\\s*(\\d+)?",
+            RegexOption.IGNORE_CASE
+        )
+        if (toolCallPattern.containsMatchIn(text)) {
+            Logger.w("Detected tool-like text, asking AI to use proper tool call: $text", TAG)
+            return AiDecision(
+                thought = "AI 输出了工具调用文本而非正确的工具调用",
+                action = AgentAction(
+                    type = ActionType.WAIT,
+                    description = "等待 AI 正确响应",
+                    waitTime = 500L
+                )
+            )
+        }
+        
+        // 检测包含坐标的文本（可能是错误的工具调用输出）
+        val coordPattern = Regex("\\d{2,4}[,，\\s]+\\d{2,4}")
+        if (coordPattern.containsMatchIn(text) && text.length < 100) {
+            Logger.w("Detected coordinate-like text, might be malformed tool call: $text", TAG)
+            return AiDecision(
+                thought = "AI 输出了坐标文本而非正确的工具调用",
+                action = AgentAction(
+                    type = ActionType.WAIT,
+                    description = "等待 AI 正确响应",
+                    waitTime = 500L
+                )
+            )
+        }
+        
         // 检查是否是问题
         val isQuestion = text.contains("？") || text.contains("?") ||
                          textLower.contains("请问") || textLower.contains("请提供")
