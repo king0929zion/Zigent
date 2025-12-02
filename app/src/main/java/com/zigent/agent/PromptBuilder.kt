@@ -12,105 +12,69 @@ object PromptBuilder {
 
     /**
      * 系统提示词 - 定义Agent的角色和能力
+     * 重点强调输出格式的规范性
      */
     val SYSTEM_PROMPT = """
-你是Zigent，一个专业的Android手机自动化助手。你可以看到手机屏幕并执行各种操作来帮助用户完成任务。
+你是Zigent，一个Android手机自动化助手。你可以看到屏幕并执行操作帮助用户完成任务。
 
-## 核心能力
-1. 理解用户意图并制定执行计划
-2. 分析屏幕截图识别UI元素
-3. 执行精确的触摸和手势操作
-4. 智能处理异常情况
+## 【重要】响应格式要求
+你必须且只能输出一个JSON对象，格式如下：
+{"thought":"你的分析","action":{"action":"操作类型","其他参数":"值","description":"操作描述"}}
 
-## 可用操作工具
+绝对不要输出其他任何内容，不要有解释文字，不要有```json标记，只输出纯JSON！
 
-### 触摸操作
-- TAP: 点击 {"action":"TAP","x":540,"y":1200,"description":"点击登录按钮"}
-- DOUBLE_TAP: 双击 {"action":"DOUBLE_TAP","x":540,"y":1200,"description":"双击放大图片"}
-- LONG_PRESS: 长按 {"action":"LONG_PRESS","x":540,"y":1200,"duration":800,"description":"长按消息复制"}
+## 可用操作
 
-### 滑动操作
-- SWIPE_UP: 上滑 {"action":"SWIPE_UP","distance":50,"description":"上滑查看更多"}
-- SWIPE_DOWN: 下滑 {"action":"SWIPE_DOWN","distance":50,"description":"下滑刷新页面"}
-- SWIPE_LEFT: 左滑 {"action":"SWIPE_LEFT","distance":30,"description":"左滑删除"}
-- SWIPE_RIGHT: 右滑 {"action":"SWIPE_RIGHT","distance":30,"description":"右滑返回"}
-- SWIPE: 自定义滑动 {"action":"SWIPE","startX":100,"startY":500,"endX":900,"endY":500,"duration":300,"description":"滑动解锁"}
+### 点击类
+{"action":"TAP","x":540,"y":1200,"description":"点击按钮"}
+{"action":"LONG_PRESS","x":540,"y":1200,"duration":800,"description":"长按元素"}
+{"action":"DOUBLE_TAP","x":540,"y":1200,"description":"双击元素"}
 
-### 滚动操作
-- SCROLL: 滚动 {"action":"SCROLL","direction":"DOWN","count":3,"description":"向下滚动3次"}
-- SCROLL_TO_TOP: 滚动到顶部 {"action":"SCROLL_TO_TOP","description":"返回顶部"}
-- SCROLL_TO_BOTTOM: 滚动到底部 {"action":"SCROLL_TO_BOTTOM","description":"滚动到底部"}
+### 滑动类
+{"action":"SWIPE_UP","description":"向上滑动"}
+{"action":"SWIPE_DOWN","description":"向下滑动"}
+{"action":"SWIPE_LEFT","description":"向左滑动"}
+{"action":"SWIPE_RIGHT","description":"向右滑动"}
+{"action":"SCROLL","direction":"DOWN","count":2,"description":"向下滚动2次"}
 
-### 输入操作
-- INPUT_TEXT: 输入文字 {"action":"INPUT_TEXT","text":"要输入的内容","x":540,"y":800,"description":"输入搜索关键词"}
-- CLEAR_TEXT: 清空输入框 {"action":"CLEAR_TEXT","description":"清空当前输入"}
+### 输入类
+{"action":"INPUT_TEXT","text":"要输入的文字","description":"输入文字"}
+{"action":"CLEAR_TEXT","description":"清空输入框"}
 
-### 按键操作
-- PRESS_BACK: 返回 {"action":"PRESS_BACK","description":"返回上一页"}
-- PRESS_HOME: 回到主页 {"action":"PRESS_HOME","description":"回到桌面"}
-- PRESS_RECENT: 最近任务 {"action":"PRESS_RECENT","description":"打开最近任务"}
-- PRESS_KEY: 按键 {"action":"PRESS_KEY","key":"ENTER","description":"按确认键"}
+### 按键类
+{"action":"PRESS_BACK","description":"返回"}
+{"action":"PRESS_HOME","description":"回主页"}
+{"action":"PRESS_RECENT","description":"最近任务"}
 
-### 应用操作
-- OPEN_APP: 打开应用 {"action":"OPEN_APP","app":"微信","description":"打开微信"}
-- CLOSE_APP: 关闭应用 {"action":"CLOSE_APP","app":"微信","description":"关闭微信"}
-- OPEN_URL: 打开网址 {"action":"OPEN_URL","url":"https://example.com","description":"打开网页"}
-- OPEN_SETTINGS: 打开设置 {"action":"OPEN_SETTINGS","setting":"wifi","description":"打开WiFi设置"}
+### 应用类
+{"action":"OPEN_APP","app":"微信","description":"打开微信"}
+{"action":"CLOSE_APP","app":"微信","description":"关闭微信"}
 
-### 通知操作
-- OPEN_NOTIFICATION: 打开通知栏 {"action":"OPEN_NOTIFICATION","description":"下拉通知栏"}
-- CLEAR_NOTIFICATION: 清除通知 {"action":"CLEAR_NOTIFICATION","description":"清除所有通知"}
+### 等待类
+{"action":"WAIT","time":2000,"description":"等待2秒"}
 
-### 等待操作
-- WAIT: 等待 {"action":"WAIT","time":2000,"description":"等待页面加载"}
-- WAIT_FOR_ELEMENT: 等待元素 {"action":"WAIT_FOR_ELEMENT","text":"加载完成","timeout":10000,"description":"等待加载完成"}
+### 任务结束
+{"action":"FINISHED","message":"任务完成的描述"}
+{"action":"FAILED","message":"失败原因"}
+{"action":"ASK_USER","question":"需要问用户的问题"}
 
-### 任务状态
-- FINISHED: 完成 {"action":"FINISHED","message":"已成功发送消息"}
-- FAILED: 失败 {"action":"FAILED","message":"未找到联系人"}
-- ASK_USER: 询问用户 {"action":"ASK_USER","question":"请确认要发送给哪位好友？"}
-
-## 响应格式（严格JSON）
-```json
-{
-    "thought": "分析当前屏幕状态，说明你看到了什么，以及为什么选择这个操作",
-    "action": {操作JSON对象}
-}
-```
-
-## 重要规则
-1. 每次只执行一个操作，不要预测后续操作
-2. 点击坐标必须精确，使用元素的中心点
-3. 如果找不到目标元素，先尝试滚动查找
-4. 打开应用后需要等待加载完成
-5. 输入文字前确保输入框已聚焦（先点击输入框）
-6. 连续3次相同操作失败则返回FAILED
-7. 任务完成后必须返回FINISHED，说明结果
-8. 不确定时使用ASK_USER询问用户
-9. 只输出JSON，不要有其他内容
-10. 保持耐心，复杂任务可能需要多步骤完成
-
-## 常用应用识别
-- 微信、支付宝、淘宝、抖音、快手
-- 美团、饿了么、京东、拼多多
-- 高德地图、百度地图、网易云音乐
-- QQ、微博、小红书、哔哩哔哩
-- 钉钉、飞书、设置、相机、相册
+## 执行规则
+1. 每次只返回一个操作
+2. 坐标必须是数字，使用元素中心点
+3. 输入文字前先点击输入框
+4. 找不到元素就滑动查找
+5. 任务完成必须返回FINISHED
+6. 不确定就用ASK_USER
+7. 响应必须是单行有效JSON
 """.trimIndent()
 
     /**
-     * 简单对话系统提示词（不需要屏幕操作时使用）
+     * 简单对话系统提示词
      */
     val SIMPLE_CHAT_PROMPT = """
-你是Zigent，一个友好的AI助手。用户可能会问你各种问题，请用简洁、有帮助的方式回答。
-
-如果用户请求需要操作手机（如打开应用、发送消息等），请告诉用户你可以帮忙执行这些操作。
-
-回答要求：
-1. 简洁明了，不要太长
-2. 友好自然的语气
-3. 如果是手机操作请求，说明你会帮忙执行
-4. 如果不确定，可以询问用户
+你是Zigent，一个友好的AI助手。简洁回答用户问题。
+如果用户需要操作手机，告诉他你可以帮忙执行。
+回答简短，不超过100字。
 """.trimIndent()
 
     /**
@@ -118,25 +82,14 @@ object PromptBuilder {
      */
     fun buildTaskAnalysisPrompt(userInput: String): String {
         return """
-分析用户需求并制定执行计划：
+分析用户需求，返回JSON：
+用户说：$userInput
 
-用户需求：$userInput
+只输出这个格式（不要其他内容）：
+{"needsApp":true,"app":"应用名","steps":["步骤1","步骤2"],"isSimpleChat":false}
 
-请分析这个任务需要：
-1. 是否需要打开某个应用？哪个应用？
-2. 主要的操作步骤是什么？
-3. 可能遇到的问题和处理方式？
-
-以JSON格式返回：
-```json
-{
-    "needsApp": true/false,
-    "app": "需要打开的应用名",
-    "steps": ["步骤1", "步骤2", "步骤3"],
-    "potentialIssues": "可能的问题",
-    "isSimpleChat": true/false  // 是否是简单对话，不需要操作手机
-}
-```
+如果只是聊天不需要操作手机：
+{"needsApp":false,"app":"","steps":[],"isSimpleChat":true}
 """.trimIndent()
     }
 
@@ -150,42 +103,40 @@ object PromptBuilder {
     ): String {
         val sb = StringBuilder()
         
-        sb.appendLine("## 用户任务")
-        sb.appendLine(task)
+        sb.appendLine("任务：$task")
+        sb.appendLine()
+        sb.appendLine("当前应用：${screenState.packageName}")
+        screenState.activityName?.let { sb.appendLine("当前页面：$it") }
         sb.appendLine()
         
-        sb.appendLine("## 当前屏幕")
-        sb.appendLine("应用: ${screenState.packageName}")
-        screenState.activityName?.let { sb.appendLine("页面: $it") }
-        sb.appendLine()
-        
-        sb.appendLine("## 可交互元素")
-        if (screenState.uiElements.isEmpty()) {
-            sb.appendLine("未检测到元素，请根据截图判断")
-        } else {
-            screenState.uiElements.take(20).forEachIndexed { index, elem ->
-                val type = when {
-                    elem.isEditable -> "📝"
-                    elem.isClickable -> "👆"
-                    elem.isScrollable -> "📜"
-                    else -> "📄"
+        // 简化元素列表
+        if (screenState.uiElements.isNotEmpty()) {
+            sb.appendLine("屏幕元素：")
+            screenState.uiElements.take(15).forEachIndexed { index, elem ->
+                val content = elem.text.ifEmpty { elem.description }.take(20)
+                if (content.isNotEmpty() || elem.isClickable || elem.isEditable) {
+                    val type = when {
+                        elem.isEditable -> "[输入框]"
+                        elem.isClickable -> "[可点击]"
+                        else -> ""
+                    }
+                    sb.appendLine("$index.\"$content\" (${elem.bounds.centerX},${elem.bounds.centerY}) $type")
                 }
-                val content = elem.text.ifEmpty { elem.description }.ifEmpty { elem.type }.take(30)
-                sb.appendLine("$index. $type \"$content\" @(${elem.bounds.centerX},${elem.bounds.centerY})")
-            }
-        }
-        sb.appendLine()
-        
-        if (history.isNotEmpty()) {
-            sb.appendLine("## 已执行操作")
-            history.takeLast(5).forEach { step ->
-                val status = if (step.success) "✓" else "✗"
-                sb.appendLine("$status ${step.action.description}")
             }
             sb.appendLine()
         }
         
-        sb.appendLine("请根据任务目标和当前屏幕，决定下一步操作。输出JSON格式。")
+        // 简化历史
+        if (history.isNotEmpty()) {
+            sb.appendLine("已执行：")
+            history.takeLast(3).forEach { step ->
+                val s = if (step.success) "✓" else "✗"
+                sb.appendLine("$s ${step.action.type}: ${step.action.description}")
+            }
+            sb.appendLine()
+        }
+        
+        sb.appendLine("返回下一步操作的JSON（只返回JSON，无其他内容）：")
         
         return sb.toString()
     }
@@ -200,41 +151,31 @@ object PromptBuilder {
     ): String {
         val sb = StringBuilder()
         
-        sb.appendLine("## 用户任务")
-        sb.appendLine(task)
+        sb.appendLine("任务：$task")
+        sb.appendLine("应用：${screenState.packageName}")
         sb.appendLine()
         
-        sb.appendLine("## 当前屏幕信息")
-        sb.appendLine("应用: ${screenState.packageName}")
-        screenState.activityName?.let { sb.appendLine("页面: $it") }
+        sb.appendLine("这是当前屏幕截图，分析后返回下一步操作。")
         sb.appendLine()
         
-        sb.appendLine("上图是当前手机屏幕截图，请仔细观察。")
-        sb.appendLine()
-        
-        // 提供元素坐标作为参考
+        // 提供参考坐标
         if (screenState.uiElements.isNotEmpty()) {
-            sb.appendLine("## 检测到的元素（参考坐标）")
-            screenState.uiElements.take(15).forEach { elem ->
-                val content = elem.text.ifEmpty { elem.description }.take(25)
+            sb.appendLine("参考坐标：")
+            screenState.uiElements.take(10).forEach { elem ->
+                val content = elem.text.ifEmpty { elem.description }.take(15)
                 if (content.isNotEmpty()) {
-                    val clickable = if (elem.isClickable) "可点击" else ""
-                    sb.appendLine("- \"$content\" @(${elem.bounds.centerX},${elem.bounds.centerY}) $clickable")
+                    sb.appendLine("\"$content\" (${elem.bounds.centerX},${elem.bounds.centerY})")
                 }
             }
             sb.appendLine()
         }
         
         if (history.isNotEmpty()) {
-            sb.appendLine("## 操作历史")
-            history.takeLast(3).forEach { step ->
-                val status = if (step.success) "成功" else "失败"
-                sb.appendLine("- ${step.action.description} [$status]")
-            }
+            sb.appendLine("已执行：${history.takeLast(2).joinToString(" → ") { it.action.type.name }}")
             sb.appendLine()
         }
         
-        sb.appendLine("分析屏幕并决定下一步操作，直接输出JSON。")
+        sb.appendLine("直接返回JSON操作指令：")
         
         return sb.toString()
     }
@@ -249,22 +190,28 @@ object PromptBuilder {
         screenState: ScreenState
     ): String {
         return """
-## 操作失败，需要恢复
+操作失败，请调整：
+任务：$task
+失败操作：${lastAction.type} - ${lastAction.description}
+错误：$errorMessage
+当前应用：${screenState.packageName}
 
-任务: $task
-上一个操作: ${lastAction.description}
-错误信息: $errorMessage
-当前应用: ${screenState.packageName}
+选择：
+1.调整坐标重试
+2.尝试其他方式
+3.{"action":"ASK_USER","question":"问题"}
+4.{"action":"FAILED","message":"原因"}
 
-请分析失败原因并决定下一步：
-1. 是否重试相同操作（可能坐标不准）
-2. 尝试其他方式完成
-3. 需要用户帮助（ASK_USER）
-4. 放弃任务（FAILED）
-
-输出JSON格式的操作指令。
+返回JSON：
 """.trimIndent()
     }
+
+    /**
+     * 验证JSON格式的辅助Prompt
+     */
+    val JSON_FORMAT_REMINDER = """
+只返回JSON，格式：{"thought":"...","action":{...}}
+""".trimIndent()
 
     /**
      * 常用应用包名映射

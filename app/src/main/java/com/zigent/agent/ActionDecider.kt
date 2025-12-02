@@ -112,11 +112,15 @@ class ActionDecider(
      * 解析AI响应
      */
     private fun parseAiResponse(response: String): AiDecision {
-        Logger.d("Parsing AI response: ${response.take(500)}", TAG)
+        Logger.d("Raw AI response: ${response.take(300)}", TAG)
+        
+        // 清洗响应
+        val cleanedResponse = cleanResponse(response)
+        Logger.d("Cleaned response: ${cleanedResponse.take(300)}", TAG)
         
         try {
             // 提取JSON部分
-            val jsonStr = extractJson(response)
+            val jsonStr = extractJson(cleanedResponse)
             val jsonObject = JsonParser.parseString(jsonStr).asJsonObject
             
             val thought = jsonObject.get("thought")?.asString ?: ""
@@ -153,19 +157,56 @@ class ActionDecider(
     }
 
     /**
+     * 清洗AI响应，去除不必要的内容
+     */
+    private fun cleanResponse(response: String): String {
+        var cleaned = response.trim()
+        
+        // 去除思考过程标记
+        cleaned = cleaned.replace(Regex("<think>.*?</think>", RegexOption.DOT_MATCHES_ALL), "")
+        cleaned = cleaned.replace(Regex("<thinking>.*?</thinking>", RegexOption.DOT_MATCHES_ALL), "")
+        
+        // 去除代码块标记
+        cleaned = cleaned.replace(Regex("```json\\s*", RegexOption.IGNORE_CASE), "")
+        cleaned = cleaned.replace(Regex("```\\s*$", RegexOption.MULTILINE), "")
+        cleaned = cleaned.replace("```", "")
+        
+        // 去除开头的解释文字（到第一个{为止）
+        val firstBrace = cleaned.indexOf('{')
+        if (firstBrace > 0) {
+            val lastBrace = cleaned.lastIndexOf('}')
+            if (lastBrace > firstBrace) {
+                cleaned = cleaned.substring(firstBrace, lastBrace + 1)
+            }
+        }
+        
+        // 去除多余的空白
+        cleaned = cleaned.trim()
+        
+        return cleaned
+    }
+    
+    /**
      * 从响应中提取JSON
      */
     private fun extractJson(response: String): String {
+        // 如果已经是JSON，直接返回
+        val trimmed = response.trim()
+        if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+            return trimmed
+        }
+        
         // 尝试找到JSON代码块
         val codeBlockRegex = Regex("```(?:json)?\\s*([\\s\\S]*?)```")
         codeBlockRegex.find(response)?.let {
             return it.groupValues[1].trim()
         }
         
-        // 尝试找到JSON对象
-        val jsonRegex = Regex("\\{[\\s\\S]*\\}")
-        jsonRegex.find(response)?.let {
-            return it.value
+        // 尝试找到JSON对象（从第一个{到最后一个}）
+        val firstBrace = response.indexOf('{')
+        val lastBrace = response.lastIndexOf('}')
+        if (firstBrace != -1 && lastBrace > firstBrace) {
+            return response.substring(firstBrace, lastBrace + 1)
         }
         
         return response
