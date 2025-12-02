@@ -87,20 +87,54 @@ object AppUtils {
 
     /**
      * 根据应用名获取包名
+     * 支持各种变体，如 "抖音"、"抖音app"、"打开抖音" 等
      */
     fun getPackageName(appName: String): String? {
-        val nameLower = appName.lowercase().trim()
+        // 清理应用名：移除常见修饰词
+        val cleanName = appName
+            .replace("打开", "")
+            .replace("启动", "")
+            .replace("应用", "")
+            .replace("app", "")
+            .replace("APP", "")
+            .replace("软件", "")
+            .lowercase()
+            .trim()
         
-        // 精确匹配
+        // 1. 精确匹配原始名称
         APP_PACKAGE_MAP[appName]?.let { return it }
-        APP_PACKAGE_MAP[nameLower]?.let { return it }
         
-        // 模糊匹配
-        return APP_PACKAGE_MAP.entries.find { (key, _) ->
-            key.lowercase() == nameLower || 
-            nameLower.contains(key.lowercase()) ||
-            key.lowercase().contains(nameLower)
-        }?.value
+        // 2. 精确匹配清理后的名称
+        APP_PACKAGE_MAP[cleanName]?.let { return it }
+        APP_PACKAGE_MAP.entries.find { it.key.lowercase() == cleanName }?.let { return it.value }
+        
+        // 3. 模糊匹配（包含关系）
+        APP_PACKAGE_MAP.entries.find { (key, _) ->
+            cleanName.contains(key.lowercase()) || key.lowercase().contains(cleanName)
+        }?.let { return it.value }
+        
+        // 4. 别名匹配
+        val aliases = mapOf(
+            "dy" to "抖音",
+            "douyin" to "抖音",
+            "tiktok" to "抖音",
+            "wx" to "微信",
+            "weixin" to "微信",
+            "wechat" to "微信",
+            "zfb" to "支付宝",
+            "zhifubao" to "支付宝",
+            "tb" to "淘宝",
+            "jd" to "京东",
+            "mt" to "美团",
+            "elm" to "饿了么",
+            "bili" to "哔哩哔哩",
+            "ks" to "快手"
+        )
+        aliases[cleanName]?.let { aliasName ->
+            APP_PACKAGE_MAP[aliasName]?.let { return it }
+        }
+        
+        return null
     }
 
     /**

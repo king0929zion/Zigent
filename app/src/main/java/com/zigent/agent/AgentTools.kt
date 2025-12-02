@@ -310,6 +310,20 @@ object AgentTools {
 3. **输入前先点击** - input_text前确保输入框已聚焦（📝标记）
 4. **找不到就滑动** - 用swipe_up/swipe_down查找屏幕外元素
 5. **不确定就问** - 用ask_user确认，不要猜测
+6. **及时完成** - 任务目标达成后立即调用 finished
+
+## 任务完成判断
+
+当以下情况发生时，调用 finished(message="..."):
+- 用户要求打开的应用已经打开
+- 用户要求的操作已经执行完毕
+- 搜索/发送/设置等操作已成功
+- 不需要等待结果的任务完成后
+
+当以下情况发生时，调用 failed(message="..."):
+- 目标元素找不到且滑动多次后仍然找不到
+- 应用未安装或无法打开
+- 操作被系统拒绝
 
 ## 示例
 
@@ -320,11 +334,14 @@ object AgentTools {
 屏幕显示：📝 "搜索关键词" (540, 200)
 → input_text(text="天气", description="输入搜索词")
 
-找不到目标元素
-→ swipe_up(description="向上滑动查找")
+输入完成后需要搜索
+→ tap(x=960, y=200, description="点击搜索") 或 press_enter(description="确认搜索")
 
-验证码图片
-→ describe_screen(focus="验证码数字", description="识别验证码")
+搜索结果已显示
+→ finished(message="已搜索天气，结果已显示")
+
+打开抖音任务，屏幕显示抖音首页
+→ finished(message="已成功打开抖音")
 """.trimIndent()
 
     // ==================== 辅助方法 ====================

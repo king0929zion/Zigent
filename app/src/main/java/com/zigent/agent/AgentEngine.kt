@@ -154,8 +154,16 @@ class AgentEngine @Inject constructor(
      * @param userInput 用户输入的任务描述
      */
     fun startTask(userInput: String) {
-        if (_state.value != AgentState.IDLE && _state.value != AgentState.COMPLETED && _state.value != AgentState.FAILED) {
-            Logger.w("Agent is busy, cannot start new task", TAG)
+        // 允许在这些状态下启动新任务
+        val canStart = _state.value in listOf(
+            AgentState.IDLE, 
+            AgentState.COMPLETED, 
+            AgentState.FAILED,
+            AgentState.WAITING_USER  // 允许从等待状态启动新任务
+        )
+        
+        if (!canStart) {
+            Logger.w("Agent is busy (${_state.value}), cannot start new task", TAG)
             return
         }
         
@@ -163,6 +171,13 @@ class AgentEngine @Inject constructor(
             callback?.onTaskFailed("请先配置AI设置")
             return
         }
+        
+        // 取消之前的任务（如果有）
+        executionJob?.cancel()
+        executionJob = null
+        
+        // 重置状态
+        _state.value = AgentState.IDLE
         
         // 创建任务
         currentTask = AgentTask(
@@ -313,6 +328,10 @@ class AgentEngine @Inject constructor(
                     callback?.onStateChanged(AgentState.COMPLETED)
                     callback?.onTaskCompleted(decision.action.resultMessage ?: "任务完成")
                     Logger.i("Task completed: ${decision.action.resultMessage}", TAG)
+                    // 延迟后重置为 IDLE
+                    delay(1000)
+                    _state.value = AgentState.IDLE
+                    callback?.onStateChanged(AgentState.IDLE)
                     return
                 }
                 ActionType.FAILED -> {
@@ -320,12 +339,17 @@ class AgentEngine @Inject constructor(
                     callback?.onStateChanged(AgentState.FAILED)
                     callback?.onTaskFailed(decision.action.resultMessage ?: "任务失败")
                     Logger.e("Task failed: ${decision.action.resultMessage}", TAG)
+                    // 延迟后重置为 IDLE
+                    delay(1000)
+                    _state.value = AgentState.IDLE
+                    callback?.onStateChanged(AgentState.IDLE)
                     return
                 }
                 ActionType.ASK_USER -> {
                     _state.value = AgentState.WAITING_USER
                     callback?.onStateChanged(AgentState.WAITING_USER)
                     callback?.onAskUser(decision.action.question ?: "需要您的确认")
+                    // 不再 return，等待用户响应后继续或用户启动新任务
                     return
                 }
                 ActionType.DESCRIBE_SCREEN -> {
