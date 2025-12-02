@@ -140,6 +140,7 @@ object InstalledAppsHelper {
     
     /**
      * 生成应用列表的文本描述（用于 AI 上下文）
+     * 提供完整的包名，方便 AI 直接使用
      */
     fun generateAppsContext(context: Context): String {
         val apps = getInstalledUserApps(context)
@@ -149,15 +150,38 @@ object InstalledAppsHelper {
         }
         
         val sb = StringBuilder()
-        sb.appendLine("【已安装应用】共 ${apps.size} 个")
+        sb.appendLine("## 已安装应用列表（共 ${apps.size} 个）")
+        sb.appendLine("格式: 应用名 -> 包名（使用 open_app 时请使用完整包名）")
+        sb.appendLine()
         
-        // 分组显示（每行多个应用，节省 token）
-        val appNames = apps.map { "${it.name}(${it.packageName.substringAfterLast(".")})" }
-        appNames.chunked(5).forEach { chunk ->
-            sb.appendLine(chunk.joinToString(" | "))
+        // 按字母分组显示，提供完整包名
+        apps.forEach { app ->
+            sb.appendLine("- ${app.name} -> ${app.packageName}")
         }
         
         return sb.toString()
+    }
+    
+    /**
+     * 生成应用映射表（用于快速查找）
+     */
+    fun getAppNameToPackageMap(context: Context): Map<String, String> {
+        val apps = getInstalledUserApps(context)
+        val map = mutableMapOf<String, String>()
+        
+        apps.forEach { app ->
+            // 原始名称
+            map[app.name.lowercase()] = app.packageName
+            
+            // 简化名称（去掉空格和特殊字符）
+            val simpleName = app.name.lowercase()
+                .replace(" ", "")
+                .replace("-", "")
+                .replace("_", "")
+            map[simpleName] = app.packageName
+        }
+        
+        return map
     }
     
     /**

@@ -392,6 +392,11 @@ class AgentEngine @Inject constructor(
         var lastActionWasVlm = false  // 上一步是否是 VLM 调用
         var lastVlmError: String? = null  // 上次 VLM 调用失败的错误信息
         
+        // 检测连续相同操作
+        var lastActionKey: String? = null  // 上一个操作的唯一标识
+        var sameActionCount = 0  // 连续相同操作计数
+        val maxSameActionRetries = 2  // 最多允许连续 2 次相同操作
+        
         while (stepCount < AiConfig.MAX_AGENT_STEPS) {
             // 检查是否被取消
             if (!coroutineContext.isActive) {
@@ -437,6 +442,28 @@ class AgentEngine @Inject constructor(
             
             Logger.d("AI thought: ${decision.thought}", TAG)
             Logger.d("AI action: ${decision.action.type} - ${decision.action.description}", TAG)
+            
+            // 检测连续相同操作
+            val currentActionKey = buildActionKey(decision.action)
+            if (currentActionKey == lastActionKey) {
+                sameActionCount++
+                Logger.w("Same action detected: $currentActionKey (count: $sameActionCount)", TAG)
+                
+                if (sameActionCount >= maxSameActionRetries) {
+                    Logger.e("Too many consecutive same actions ($sameActionCount), aborting", TAG)
+                    _state.value = AgentState.FAILED
+                    callback?.onStateChanged(AgentState.FAILED)
+                    callback?.onTaskFailed("AI 重复执行相同操作 $sameActionCount 次，任务终止。操作: ${decision.action.description}")
+                    delay(1000)
+                    _state.value = AgentState.IDLE
+                    callback?.onStateChanged(AgentState.IDLE)
+                    return
+                }
+            } else {
+                // 操作不同，重置计数
+                sameActionCount = 1
+                lastActionKey = currentActionKey
+            }
             
             // 3. 检查特殊操作类型
             when (decision.action.type) {
@@ -731,6 +758,27 @@ class AgentEngine @Inject constructor(
                     resultMessage = e.message
                 )
             )
+        }
+    }
+
+    /**
+     * 构建操作的唯一标识，用于检测连续相同操作
+     */
+    private fun buildActionKey(action: AgentAction): String {
+        return when (action.type) {
+            ActionType.TAP, ActionType.DOUBLE_TAP, ActionType.LONG_PRESS -> 
+                "${action.type}_${action.x}_${action.y}"
+            ActionType.SWIPE, ActionType.SWIPE_UP, ActionType.SWIPE_DOWN, 
+            ActionType.SWIPE_LEFT, ActionType.SWIPE_RIGHT -> 
+                "${action.type}_${action.startX}_${action.startY}_${action.endX}_${action.endY}_${action.swipeDistance}"
+            ActionType.INPUT_TEXT -> 
+                "${action.type}_${action.text}"
+            ActionType.OPEN_APP, ActionType.CLOSE_APP -> 
+                "${action.type}_${action.packageName ?: action.appName}"
+            ActionType.DESCRIBE_SCREEN -> 
+                "${action.type}_${action.text ?: "default"}"
+            else -> 
+                "${action.type}_${action.description}"
         }
     }
 

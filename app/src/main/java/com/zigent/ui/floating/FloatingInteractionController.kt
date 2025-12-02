@@ -23,6 +23,7 @@ enum class InteractionPhase {
     VOICE_INPUT,        // 语音输入中
     AI_PROCESSING,      // AI处理中
     TASK_EXECUTING,     // 任务执行中
+    WAITING_ANSWER,     // 等待用户回答 AI 的问题
     COMPLETED,          // 完成
     ERROR               // 错误
 }
@@ -79,6 +80,9 @@ class FloatingInteractionController(
         agentEngine.callback = createAgentCallback()
     }
 
+    // 保存 AI 的问题，用于在用户回答后继续
+    private var pendingAiQuestion: String? = null
+
     /**
      * 创建Agent回调
      */
@@ -90,7 +94,7 @@ class FloatingInteractionController(
                     AgentState.ANALYZING -> InteractionPhase.AI_PROCESSING
                     AgentState.PLANNING -> InteractionPhase.AI_PROCESSING
                     AgentState.EXECUTING -> InteractionPhase.TASK_EXECUTING
-                    AgentState.WAITING_USER -> InteractionPhase.AI_PROCESSING
+                    AgentState.WAITING_USER -> InteractionPhase.WAITING_ANSWER  // 改为等待回答状态
                     AgentState.PAUSED -> InteractionPhase.TASK_EXECUTING
                     AgentState.COMPLETED -> InteractionPhase.COMPLETED
                     AgentState.FAILED -> InteractionPhase.ERROR
@@ -125,11 +129,15 @@ class FloatingInteractionController(
             }
             
             override fun onAskUser(question: String) {
-                // 当AI需要询问用户时，通过TTS朗读问题
+                // 当AI需要询问用户时
                 Logger.i("AI asking user: $question", TAG)
+                pendingAiQuestion = question
                 callback?.onTaskProgress("AI询问: $question")
-                voiceManager.speak(question) {
-                    // 朗读完成后可以开始新的语音输入
+                
+                // 通过TTS朗读问题，并提示用户点击悬浮球回答
+                voiceManager.speak("$question。请点击悬浮球回答。") {
+                    // 朗读完成后等待用户点击
+                    Logger.d("AI question spoken, waiting for user to click floating ball", TAG)
                 }
             }
         }
@@ -170,6 +178,11 @@ class FloatingInteractionController(
                 // 语音输入中 -> 结束语音输入并处理结果
                 finishVoiceInput()
             }
+            InteractionPhase.WAITING_ANSWER -> {
+                // 等待用户回答 AI 问题 -> 开始语音输入回答
+                Logger.i("User clicked to answer AI question", TAG)
+                startVoiceInputForAnswer()
+            }
             InteractionPhase.AI_PROCESSING, InteractionPhase.TASK_EXECUTING -> {
                 // 处理中/执行中 -> 取消任务
                 Logger.d("Cancelling task", TAG)
@@ -180,6 +193,30 @@ class FloatingInteractionController(
                 // 完成/错误 -> 重置为空闲
                 reset()
             }
+        }
+    }
+    
+    /**
+     * 开始语音输入来回答 AI 的问题
+     */
+    private fun startVoiceInputForAnswer() {
+        Logger.i("Starting voice input to answer AI question", TAG)
+        
+        // 标记为回答模式
+        isAnsweringAiQuestion = true
+        
+        _phase.value = InteractionPhase.VOICE_INPUT
+        _recognizedText.value = ""
+        callback?.onPhaseChanged(InteractionPhase.VOICE_INPUT)
+        
+        // 停止当前正在播放的 TTS
+        if (voiceManager.isSpeaking()) {
+            voiceManager.stopSpeaking()
+        }
+        
+        // 开始语音识别（简短提示后开始）
+        voiceManager.speak("请回答") {
+            voiceManager.startListening()
         }
     }
 
@@ -207,6 +244,9 @@ class FloatingInteractionController(
         voiceManager.stopListening()
     }
     
+    // 是否正在回答 AI 的问题
+    private var isAnsweringAiQuestion = false
+
     /**
      * 完成语音输入并处理结果
      * 用户再次点击悬浮球时调用
@@ -215,6 +255,7 @@ class FloatingInteractionController(
         Logger.i("=== finishVoiceInput() called ===", TAG)
         Logger.d("Current _recognizedText: '${_recognizedText.value}'", TAG)
         Logger.d("Current lastRecognizedText: '${voiceManager.lastRecognizedText.value}'", TAG)
+        Logger.d("isAnsweringAiQuestion: $isAnsweringAiQuestion", TAG)
         
         // 先停止TTS（如果还在播报提示语）
         if (voiceManager.isSpeaking()) {
@@ -230,7 +271,7 @@ class FloatingInteractionController(
             voiceManager.cancelListening()
             _recognizedText.value = existingText
             callback?.onVoiceResult(existingText)
-            startAiProcessing(existingText)
+            processRecognizedText(existingText)
             return
         }
 
@@ -254,7 +295,7 @@ class FloatingInteractionController(
                 Logger.i("=== Processing recognized text: $finalText ===", TAG)
                 _recognizedText.value = finalText
                 callback?.onVoiceResult(finalText)
-                startAiProcessing(finalText)
+                processRecognizedText(finalText)
             } else {
                 Logger.w("=== No text recognized after waiting! ===", TAG)
                 Logger.d("Final _recognizedText: '${_recognizedText.value}'", TAG)
@@ -266,10 +307,41 @@ class FloatingInteractionController(
                 voiceManager.speak("没有检测到语音，请重试") {
                     scope.launch {
                         delay(1000)
-                        reset()
+                        // 如果是回答模式，返回等待状态而不是 IDLE
+                        if (isAnsweringAiQuestion) {
+                            _phase.value = InteractionPhase.WAITING_ANSWER
+                            callback?.onPhaseChanged(InteractionPhase.WAITING_ANSWER)
+                            callback?.onTaskProgress("AI询问: ${pendingAiQuestion}")
+                        } else {
+                            reset()
+                        }
                     }
                 }
             }
+        }
+    }
+    
+    /**
+     * 处理识别到的文本
+     * 根据当前是新任务还是回答 AI 问题，选择不同的处理方式
+     */
+    private fun processRecognizedText(text: String) {
+        if (isAnsweringAiQuestion && pendingAiQuestion != null) {
+            // 回答 AI 的问题
+            Logger.i("Answering AI question with: $text", TAG)
+            isAnsweringAiQuestion = false
+            pendingAiQuestion = null
+            
+            _phase.value = InteractionPhase.AI_PROCESSING
+            callback?.onPhaseChanged(InteractionPhase.AI_PROCESSING)
+            
+            voiceManager.speak("收到您的回答：$text") {
+                // 调用 AgentEngine 的回答方法
+                agentEngine.answerQuestion(text)
+            }
+        } else {
+            // 新任务
+            startAiProcessing(text)
         }
     }
 
@@ -427,6 +499,8 @@ class FloatingInteractionController(
         Logger.d("Resetting to idle", TAG)
         _phase.value = InteractionPhase.IDLE
         _recognizedText.value = ""
+        isAnsweringAiQuestion = false
+        pendingAiQuestion = null
         callback?.onPhaseChanged(InteractionPhase.IDLE)
     }
 
@@ -449,6 +523,7 @@ class FloatingInteractionController(
             InteractionPhase.VOICE_INPUT -> FloatingBallState.LISTENING
             InteractionPhase.AI_PROCESSING -> FloatingBallState.PROCESSING
             InteractionPhase.TASK_EXECUTING -> FloatingBallState.EXECUTING
+            InteractionPhase.WAITING_ANSWER -> FloatingBallState.PROCESSING  // 等待回答时显示为处理中
             InteractionPhase.COMPLETED -> FloatingBallState.SUCCESS
             InteractionPhase.ERROR -> FloatingBallState.ERROR
         }

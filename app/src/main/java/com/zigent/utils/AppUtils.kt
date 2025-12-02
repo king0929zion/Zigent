@@ -87,16 +87,22 @@ object AppUtils {
 
     /**
      * 根据应用名获取包名
-     * 支持各种变体，如 "抖音"、"抖音app"、"打开抖音" 等
+     * 优先从已安装应用动态查找，然后使用静态映射表
      * 
-     * @param appName 应用名称
+     * @param appName 应用名称或包名
      * @param context 可选的 Context，用于从已安装应用中查找
      */
     fun getPackageName(appName: String, context: android.content.Context? = null): String? {
+        // 如果已经是包名格式，直接返回
+        if (appName.contains(".") && !appName.contains(" ")) {
+            return appName
+        }
+        
         // 清理应用名：移除常见修饰词
         val cleanName = appName
             .replace("打开", "")
             .replace("启动", "")
+            .replace("关闭", "")
             .replace("应用", "")
             .replace("app", "")
             .replace("APP", "")
@@ -104,19 +110,33 @@ object AppUtils {
             .lowercase()
             .trim()
         
-        // 1. 精确匹配原始名称
-        APP_PACKAGE_MAP[appName]?.let { return it }
+        // 1. 优先从已安装应用中动态查找（最准确）
+        context?.let { ctx ->
+            val installedApps = InstalledAppsHelper.getInstalledUserApps(ctx)
+            
+            // 精确匹配应用名
+            installedApps.find { it.name.lowercase() == cleanName }?.let { 
+                return it.packageName 
+            }
+            
+            // 包含匹配
+            installedApps.find { 
+                it.name.lowercase().contains(cleanName) || 
+                cleanName.contains(it.name.lowercase())
+            }?.let { 
+                return it.packageName 
+            }
+            
+            // 拼音/英文名匹配（部分匹配）
+            installedApps.find {
+                val simpleName = it.name.lowercase().replace(" ", "")
+                simpleName.contains(cleanName) || cleanName.contains(simpleName)
+            }?.let {
+                return it.packageName
+            }
+        }
         
-        // 2. 精确匹配清理后的名称
-        APP_PACKAGE_MAP[cleanName]?.let { return it }
-        APP_PACKAGE_MAP.entries.find { it.key.lowercase() == cleanName }?.let { return it.value }
-        
-        // 3. 模糊匹配（包含关系）
-        APP_PACKAGE_MAP.entries.find { (key, _) ->
-            cleanName.contains(key.lowercase()) || key.lowercase().contains(cleanName)
-        }?.let { return it.value }
-        
-        // 4. 别名匹配
+        // 2. 别名匹配
         val aliases = mapOf(
             "dy" to "抖音",
             "douyin" to "抖音",
@@ -131,15 +151,35 @@ object AppUtils {
             "mt" to "美团",
             "elm" to "饿了么",
             "bili" to "哔哩哔哩",
-            "ks" to "快手"
+            "ks" to "快手",
+            "xhs" to "小红书",
+            "pdd" to "拼多多"
         )
-        aliases[cleanName]?.let { aliasName ->
-            APP_PACKAGE_MAP[aliasName]?.let { return it }
+        val aliasTarget = aliases[cleanName]
+        
+        // 3. 静态映射表查找
+        // 精确匹配原始名称
+        APP_PACKAGE_MAP[appName]?.let { return it }
+        
+        // 精确匹配清理后的名称
+        APP_PACKAGE_MAP[cleanName]?.let { return it }
+        APP_PACKAGE_MAP.entries.find { it.key.lowercase() == cleanName }?.let { return it.value }
+        
+        // 别名对应的映射
+        aliasTarget?.let { target ->
+            APP_PACKAGE_MAP[target]?.let { return it }
         }
         
-        // 5. 如果提供了 Context，从已安装应用中查找
-        context?.let { ctx ->
-            InstalledAppsHelper.findPackageByName(ctx, cleanName)?.let { return it }
+        // 模糊匹配（包含关系）
+        APP_PACKAGE_MAP.entries.find { (key, _) ->
+            cleanName.contains(key.lowercase()) || key.lowercase().contains(cleanName)
+        }?.let { return it.value }
+        
+        // 4. 再次尝试已安装应用（使用别名）
+        aliasTarget?.let { target ->
+            context?.let { ctx ->
+                InstalledAppsHelper.findPackageByName(ctx, target)?.let { return it }
+            }
         }
         
         return null
