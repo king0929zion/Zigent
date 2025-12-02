@@ -58,34 +58,77 @@ class AiClient(private val settings: AiSettings) {
         messages: List<ChatMessage>,
         tools: List<Tool>,
         systemPrompt: String? = null
-    ): Result<ToolCall?> = withContext(Dispatchers.IO) {
+    ): Result<ToolCallResult> = withContext(Dispatchers.IO) {
         when (settings.provider) {
-            AiProvider.SILICONFLOW -> chatOpenAiWithTools(messages, tools, systemPrompt, SILICONFLOW_BASE_URL)
-            AiProvider.OPENAI -> chatOpenAiWithTools(messages, tools, systemPrompt, OPENAI_BASE_URL)
-            AiProvider.CUSTOM -> chatOpenAiWithTools(messages, tools, systemPrompt, settings.baseUrl)
+            AiProvider.SILICONFLOW -> chatOpenAiWithTools(messages, tools, systemPrompt, null, SILICONFLOW_BASE_URL)
+            AiProvider.OPENAI -> chatOpenAiWithTools(messages, tools, systemPrompt, null, OPENAI_BASE_URL)
+            AiProvider.CUSTOM -> chatOpenAiWithTools(messages, tools, systemPrompt, null, settings.baseUrl)
             AiProvider.CLAUDE -> Result.failure(Exception("Claude不支持Function Calling，请使用硅基流动或OpenAI"))
         }
     }
 
     /**
-     * OpenAI兼容格式 带工具的聊天请求
+     * 发送带图片和工具的聊天请求（多模态 + Function Calling）
+     */
+    suspend fun chatWithToolsAndImage(
+        prompt: String,
+        imageBase64: String?,
+        tools: List<Tool>,
+        systemPrompt: String? = null
+    ): Result<ToolCallResult> = withContext(Dispatchers.IO) {
+        when (settings.provider) {
+            AiProvider.SILICONFLOW -> {
+                val messages = listOf(ChatMessage(MessageRole.USER, prompt))
+                chatOpenAiWithTools(messages, tools, systemPrompt, imageBase64, SILICONFLOW_BASE_URL)
+            }
+            AiProvider.OPENAI -> {
+                val messages = listOf(ChatMessage(MessageRole.USER, prompt))
+                chatOpenAiWithTools(messages, tools, systemPrompt, imageBase64, OPENAI_BASE_URL)
+            }
+            AiProvider.CUSTOM -> {
+                val messages = listOf(ChatMessage(MessageRole.USER, prompt))
+                chatOpenAiWithTools(messages, tools, systemPrompt, imageBase64, settings.baseUrl)
+            }
+            AiProvider.CLAUDE -> Result.failure(Exception("Claude不支持Function Calling"))
+        }
+    }
+
+    /**
+     * OpenAI兼容格式 带工具的聊天请求（支持多模态）
      */
     private fun chatOpenAiWithTools(
         messages: List<ChatMessage>,
         tools: List<Tool>,
         systemPrompt: String?,
+        imageBase64: String?,
         baseUrl: String = OPENAI_BASE_URL
-    ): Result<ToolCall?> {
+    ): Result<ToolCallResult> {
         try {
             val allMessages = buildList<Any> {
                 if (!systemPrompt.isNullOrBlank()) {
                     add(mapOf("role" to "system", "content" to systemPrompt))
                 }
+                
                 messages.forEach { msg ->
-                    add(mapOf(
-                        "role" to msg.role.name.lowercase(),
-                        "content" to msg.content
-                    ))
+                    if (imageBase64 != null && msg.role == MessageRole.USER) {
+                        // 多模态消息（带图片）
+                        val contentParts = listOf(
+                            mapOf("type" to "text", "text" to msg.content),
+                            mapOf(
+                                "type" to "image_url",
+                                "image_url" to mapOf(
+                                    "url" to "data:image/png;base64,$imageBase64",
+                                    "detail" to "high"
+                                )
+                            )
+                        )
+                        add(mapOf("role" to "user", "content" to contentParts))
+                    } else {
+                        add(mapOf(
+                            "role" to msg.role.name.lowercase(),
+                            "content" to msg.content
+                        ))
+                    }
                 }
             }
 
@@ -130,31 +173,26 @@ class AiClient(private val settings: AiSettings) {
             }
 
             val choice = toolResponse.choices?.firstOrNull()
+            val reasoning = choice?.message?.reasoningContent
             
             // 检查是否有工具调用
             val toolCall = choice?.message?.toolCalls?.firstOrNull()
             
             if (toolCall != null) {
                 Logger.i("Tool call: ${toolCall.function.name}(${toolCall.function.arguments})", TAG)
-                return Result.success(toolCall)
+                return Result.success(ToolCallResult.fromToolCall(toolCall, reasoning))
             }
             
             // 没有工具调用，可能是普通回复
             val content = choice?.message?.content
             if (!content.isNullOrBlank()) {
-                Logger.d("No tool call, text response: $content", TAG)
-                // 创建一个虚拟的 finished 调用
-                return Result.success(ToolCall(
-                    id = "text_response",
-                    type = "function",
-                    function = FunctionCall(
-                        name = "finished",
-                        arguments = gson.toJson(mapOf("message" to content))
-                    )
-                ))
+                Logger.d("No tool call, text response: ${content.take(200)}", TAG)
+                return Result.success(ToolCallResult.fromText(content, reasoning))
             }
             
-            return Result.success(null)
+            // 空响应
+            Logger.w("Empty response from API", TAG)
+            return Result.success(ToolCallResult.empty())
 
         } catch (e: Exception) {
             Logger.e("Tool API call failed", e, TAG)

@@ -9,6 +9,7 @@ import com.zigent.ai.AiSettings
 import com.zigent.ai.models.ChatMessage
 import com.zigent.ai.models.MessageRole
 import com.zigent.ai.models.ToolCall
+import com.zigent.ai.models.ToolCallResult
 import com.zigent.utils.Logger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -124,7 +125,7 @@ class ActionDecider(
     }
 
     /**
-     * 使用 Function Calling 决定下一步操作
+     * 使用 Function Calling 决定下一步操作（支持多模态）
      */
     suspend fun decideWithFunctionCalling(
         task: String,
@@ -133,32 +134,22 @@ class ActionDecider(
     ): AiDecision = withContext(Dispatchers.IO) {
         
         val prompt = buildFunctionCallingPrompt(task, screenState, history)
+        val imageBase64 = screenState.screenshotBase64
+        
         Logger.d("Function calling prompt: ${prompt.take(500)}...", TAG)
+        Logger.d("Has screenshot: ${!imageBase64.isNullOrEmpty()}", TAG)
         
-        val messages = listOf(
-            ChatMessage(MessageRole.USER, prompt)
-        )
-        
-        val result = aiClient.chatWithTools(
-            messages = messages,
+        // 使用带图片的 Function Calling（如果有截图）
+        val result = aiClient.chatWithToolsAndImage(
+            prompt = prompt,
+            imageBase64 = imageBase64,
             tools = AgentTools.ALL_TOOLS,
             systemPrompt = AgentTools.SYSTEM_PROMPT
         )
         
         result.fold(
-            onSuccess = { toolCall ->
-                if (toolCall != null) {
-                    parseToolCall(toolCall)
-                } else {
-                    AiDecision(
-                        thought = "AI没有返回操作",
-                        action = AgentAction(
-                            type = ActionType.FAILED,
-                            description = "无法获取下一步操作",
-                            resultMessage = "AI响应为空"
-                        )
-                    )
-                }
+            onSuccess = { callResult ->
+                parseToolCallResult(callResult)
             },
             onFailure = { error ->
                 Logger.e("Function calling failed", error, TAG)
@@ -171,6 +162,80 @@ class ActionDecider(
     }
 
     /**
+     * 解析工具调用结果
+     */
+    private fun parseToolCallResult(result: ToolCallResult): AiDecision {
+        // 优先处理工具调用
+        if (result.hasToolCall && result.toolCall != null) {
+            return parseToolCall(result.toolCall, result.reasoning)
+        }
+        
+        // 处理纯文本响应
+        if (result.hasTextResponse && !result.textResponse.isNullOrBlank()) {
+            return parseTextResponse(result.textResponse, result.reasoning)
+        }
+        
+        // 空响应
+        return AiDecision(
+            thought = "AI没有返回有效操作",
+            action = AgentAction(
+                type = ActionType.FAILED,
+                description = "无法获取下一步操作",
+                resultMessage = "AI响应为空"
+            )
+        )
+    }
+
+    /**
+     * 解析文本响应（当AI没有使用工具时）
+     */
+    private fun parseTextResponse(text: String, reasoning: String?): AiDecision {
+        val thought = reasoning ?: text.take(100)
+        
+        // 尝试从文本中推断操作
+        val textLower = text.lowercase()
+        
+        // 检查是否表示完成
+        if (textLower.contains("完成") || textLower.contains("finished") || textLower.contains("成功")) {
+            return AiDecision(
+                thought = thought,
+                action = AgentAction(
+                    type = ActionType.FINISHED,
+                    description = "任务完成",
+                    resultMessage = text.take(200)
+                )
+            )
+        }
+        
+        // 检查是否表示失败
+        if (textLower.contains("失败") || textLower.contains("无法") || textLower.contains("failed")) {
+            return AiDecision(
+                thought = thought,
+                action = AgentAction(
+                    type = ActionType.FAILED,
+                    description = "任务失败",
+                    resultMessage = text.take(200)
+                )
+            )
+        }
+        
+        // 检查是否是询问
+        if (text.contains("？") || text.contains("?")) {
+            return AiDecision(
+                thought = thought,
+                action = AgentAction(
+                    type = ActionType.ASK_USER,
+                    description = "需要确认",
+                    question = text.take(200)
+                )
+            )
+        }
+        
+        // 默认：尝试解析为 JSON（兼容旧模式）
+        return parseAiResponse(text)
+    }
+
+    /**
      * 构建 Function Calling 的提示词
      */
     private fun buildFunctionCallingPrompt(
@@ -180,24 +245,37 @@ class ActionDecider(
     ): String {
         val sb = StringBuilder()
         
-        sb.appendLine("任务：$task")
-        sb.appendLine()
-        sb.appendLine("当前应用：${screenState.packageName}")
-        screenState.activityName?.let { sb.appendLine("当前页面：$it") }
+        sb.appendLine("## 任务")
+        sb.appendLine(task)
         sb.appendLine()
         
-        // 简化的元素列表
+        sb.appendLine("## 当前状态")
+        sb.appendLine("应用：${screenState.packageName}")
+        screenState.activityName?.let { 
+            sb.appendLine("页面：${it.substringAfterLast(".")}")
+        }
+        sb.appendLine()
+        
+        // 屏幕元素列表
         if (screenState.uiElements.isNotEmpty()) {
-            sb.appendLine("屏幕元素：")
-            screenState.uiElements.take(15).forEachIndexed { index, elem ->
-                val content = elem.text.ifEmpty { elem.description }.take(20)
+            sb.appendLine("## 屏幕元素")
+            sb.appendLine("| # | 类型 | 内容 | 坐标 |")
+            sb.appendLine("|---|------|------|------|")
+            
+            var validIndex = 0
+            screenState.uiElements.forEach { elem ->
+                val content = elem.text.ifEmpty { elem.description }.take(25)
                 if (content.isNotEmpty() || elem.isClickable || elem.isEditable) {
                     val type = when {
-                        elem.isEditable -> "[输入框]"
-                        elem.isClickable -> "[可点击]"
-                        else -> ""
+                        elem.isEditable -> "输入框"
+                        elem.isClickable && elem.isCheckable -> "选择框"
+                        elem.isClickable -> "按钮"
+                        else -> "文本"
                     }
-                    sb.appendLine("$index.\"$content\" (${elem.bounds.centerX},${elem.bounds.centerY}) $type")
+                    val coords = "(${elem.bounds.centerX}, ${elem.bounds.centerY})"
+                    sb.appendLine("| $validIndex | $type | $content | $coords |")
+                    validIndex++
+                    if (validIndex >= 20) return@forEach
                 }
             }
             sb.appendLine()
@@ -205,23 +283,25 @@ class ActionDecider(
         
         // 历史操作
         if (history.isNotEmpty()) {
-            sb.appendLine("已执行：")
-            history.takeLast(3).forEach { step ->
-                val s = if (step.success) "✓" else "✗"
-                sb.appendLine("$s ${step.action.type}: ${step.action.description}")
+            sb.appendLine("## 已执行操作")
+            history.takeLast(5).forEachIndexed { index, step ->
+                val status = if (step.success) "✓" else "✗"
+                sb.appendLine("${index + 1}. $status ${step.action.description}")
             }
             sb.appendLine()
         }
         
-        sb.appendLine("请调用合适的工具执行下一步操作。")
+        // 明确指示
+        sb.appendLine("## 请求")
+        sb.appendLine("分析当前屏幕，调用合适的工具执行下一步操作。")
         
         return sb.toString()
     }
 
     /**
-     * 解析工具调用结果
+     * 解析工具调用
      */
-    private fun parseToolCall(toolCall: ToolCall): AiDecision {
+    private fun parseToolCall(toolCall: ToolCall, reasoning: String? = null): AiDecision {
         val functionName = toolCall.function.name
         val arguments = try {
             gson.fromJson(toolCall.function.arguments, JsonObject::class.java)
@@ -231,6 +311,7 @@ class ActionDecider(
         }
         
         Logger.i("Parsing tool call: $functionName with args: $arguments", TAG)
+        val thought = reasoning ?: "执行: $functionName"
         
         val description = arguments.get("description")?.asString ?: functionName
         
@@ -348,15 +429,40 @@ class ActionDecider(
                 question = arguments.get("question")?.asString ?: "需要更多信息"
             )
             
+            // 滚动操作
+            "scroll" -> {
+                val direction = arguments.get("direction")?.asString ?: "down"
+                val scrollDir = when (direction) {
+                    "up" -> ScrollDirection.UP
+                    "down" -> ScrollDirection.DOWN
+                    "left" -> ScrollDirection.LEFT
+                    "right" -> ScrollDirection.RIGHT
+                    else -> ScrollDirection.DOWN
+                }
+                AgentAction(
+                    type = ActionType.SCROLL,
+                    description = description,
+                    scrollDirection = scrollDir,
+                    scrollCount = arguments.get("count")?.asInt ?: 1
+                )
+            }
+            
+            // 按回车
+            "press_enter" -> AgentAction(
+                type = ActionType.PRESS_KEY,
+                description = description,
+                keyCode = 66  // KEYCODE_ENTER
+            )
+            
             else -> AgentAction(
                 type = ActionType.FAILED,
                 description = "未知操作: $functionName",
-                resultMessage = "不支持的操作类型"
+                resultMessage = "不支持的操作类型: $functionName"
             )
         }
         
         return AiDecision(
-            thought = "Tool call: $functionName",
+            thought = thought,
             action = action
         )
     }

@@ -96,3 +96,25 @@ data class ToolRequest(
     val stream: Boolean = false
 )
 
+/**
+ * 工具调用结果
+ */
+data class ToolCallResult(
+    val toolCall: ToolCall?,
+    val textResponse: String?,
+    val reasoning: String?
+) {
+    val hasToolCall: Boolean get() = toolCall != null
+    val hasTextResponse: Boolean get() = !textResponse.isNullOrBlank()
+    
+    companion object {
+        fun fromToolCall(call: ToolCall, reasoning: String? = null) = 
+            ToolCallResult(call, null, reasoning)
+        
+        fun fromText(text: String, reasoning: String? = null) = 
+            ToolCallResult(null, text, reasoning)
+        
+        fun empty() = ToolCallResult(null, null, null)
+    }
+}
+
