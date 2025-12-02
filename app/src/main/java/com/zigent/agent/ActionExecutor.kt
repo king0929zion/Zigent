@@ -395,30 +395,51 @@ class ActionExecutor @Inject constructor(
     private suspend fun executeInputText(action: AgentAction): ExecutionResult {
         val text = action.text ?: return ExecutionResult(false, errorMessage = "缺少输入文本")
         
+        Logger.i("Attempting to input text: '$text'", TAG)
+        
         // 如果提供了坐标，先点击聚焦
         if (action.x != null && action.y != null) {
+            Logger.d("Clicking to focus at (${action.x}, ${action.y})", TAG)
             val tapResult = executeTap(action)
-            if (!tapResult.success) return tapResult
-            delay(300)
+            if (!tapResult.success) {
+                Logger.w("Failed to tap for focus", TAG)
+            }
+            delay(500) // 等待输入框获得焦点
         }
         
-        // 1. 优先使用 Shizuku（支持中文输入）
+        // 1. 优先使用无障碍服务输入（支持中文，最可靠）
+        val accessibilityService = ZigentAccessibilityService.instance
+        if (accessibilityService != null) {
+            val success = accessibilityService.inputTextToFocusedField(text)
+            if (success) {
+                Logger.d("Input via Accessibility: $text", TAG)
+                return ExecutionResult(true, "输入: $text")
+            }
+            Logger.w("Accessibility input failed, trying other methods", TAG)
+        }
+        
+        // 2. 使用 Shizuku（支持中文输入）
         if (shizukuManager.isAvailable()) {
             val success = shizukuManager.inputText(text)
             if (success) {
                 Logger.d("Input via Shizuku: $text", TAG)
                 return ExecutionResult(true, "输入: $text")
             }
+            Logger.w("Shizuku input failed", TAG)
         }
         
-        // 2. 使用 ADB
-        val success = adbManager.inputText(text)
-        return if (success) {
-            Logger.d("Input via ADB: $text", TAG)
-            ExecutionResult(true, "输入: $text")
-        } else {
-            ExecutionResult(false, errorMessage = "输入失败")
+        // 3. 使用 ADB（可能不支持中文）
+        if (adbManager.isConnected()) {
+            val success = adbManager.inputText(text)
+            if (success) {
+                Logger.d("Input via ADB: $text", TAG)
+                return ExecutionResult(true, "输入: $text")
+            }
+            Logger.w("ADB input failed", TAG)
         }
+        
+        Logger.e("All input methods failed for text: $text", TAG)
+        return ExecutionResult(false, errorMessage = "输入失败，请确保无障碍服务已启用")
     }
 
     /**

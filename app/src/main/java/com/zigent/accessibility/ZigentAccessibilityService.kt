@@ -381,6 +381,87 @@ class ZigentAccessibilityService : AccessibilityService() {
     }
 
     /**
+     * 在当前聚焦的输入框中输入文本
+     * @param text 要输入的文本
+     * @return 是否成功
+     */
+    fun inputTextToFocusedField(text: String): Boolean {
+        return try {
+            val rootNode = rootInActiveWindow ?: return false
+            
+            // 查找聚焦的可编辑节点
+            val focusedNode = findFocusedEditableNode(rootNode)
+            
+            if (focusedNode != null) {
+                val result = performSetText(focusedNode, text)
+                focusedNode.recycle()
+                rootNode.recycle()
+                Logger.d("Input text via accessibility: $text, result: $result", TAG)
+                result
+            } else {
+                // 没找到聚焦的输入框，尝试找第一个可编辑的节点
+                val editableNode = findFirstEditableNode(rootNode)
+                if (editableNode != null) {
+                    // 先聚焦
+                    editableNode.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+                    val result = performSetText(editableNode, text)
+                    editableNode.recycle()
+                    rootNode.recycle()
+                    Logger.d("Input text to first editable: $text, result: $result", TAG)
+                    result
+                } else {
+                    rootNode.recycle()
+                    Logger.w("No editable field found for input", TAG)
+                    false
+                }
+            }
+        } catch (e: Exception) {
+            Logger.e("Failed to input text to focused field", e, TAG)
+            false
+        }
+    }
+    
+    /**
+     * 查找聚焦的可编辑节点
+     */
+    private fun findFocusedEditableNode(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        // 检查当前节点
+        if (node.isFocused && node.isEditable) {
+            return AccessibilityNodeInfo.obtain(node)
+        }
+        
+        // 递归检查子节点
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val result = findFocusedEditableNode(child)
+            child.recycle()
+            if (result != null) return result
+        }
+        
+        return null
+    }
+    
+    /**
+     * 查找第一个可编辑节点
+     */
+    private fun findFirstEditableNode(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        // 检查当前节点
+        if (node.isEditable) {
+            return AccessibilityNodeInfo.obtain(node)
+        }
+        
+        // 递归检查子节点
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val result = findFirstEditableNode(child)
+            child.recycle()
+            if (result != null) return result
+        }
+        
+        return null
+    }
+
+    /**
      * 通过文本查找并点击节点
      */
     fun findAndClickByText(text: String): Boolean {
