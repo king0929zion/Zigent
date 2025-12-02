@@ -175,10 +175,13 @@ class ActionDecider(
             lowerTask.contains("介绍一下")
         )
         
-        // 检查目标应用
-        val targetApp = APP_KEYWORDS.entries.find { (keyword, _) ->
-            lowerTask.contains(keyword)
-        }?.value
+        // 检查目标应用（简单关键词匹配）
+        val appKeywords = listOf(
+            "微信", "wechat", "支付宝", "alipay", "淘宝", "taobao", 
+            "京东", "jd", "抖音", "douyin", "快手", "b站", "bilibili",
+            "微博", "weibo", "美团", "饿了么", "滴滴", "qq", "设置"
+        )
+        val targetApp = appKeywords.find { lowerTask.contains(it.lowercase()) }
         
         TaskAnalysis(
             originalTask = task,
@@ -208,7 +211,7 @@ class ActionDecider(
         
         // 当前应用
         sb.appendLine("## 当前状态")
-        sb.appendLine("应用: ${getAppName(screenState.packageName)}")
+        sb.appendLine("应用: ${com.zigent.utils.AppUtils.getAppName(screenState.packageName)}")
         screenState.activityName?.let { 
             sb.appendLine("页面: ${it.substringAfterLast(".")}")
         }
@@ -539,81 +542,4 @@ class ActionDecider(
         )
     }
 
-    /**
-     * 获取应用显示名称
-     */
-    private fun getAppName(packageName: String): String {
-        val lowerPackage = packageName.lowercase()
-        return when {
-            lowerPackage.contains("wechat") || lowerPackage.contains("mm") -> "微信"
-            lowerPackage.contains("alipay") -> "支付宝"
-            lowerPackage.contains("taobao") -> "淘宝"
-            lowerPackage.contains("jd") -> "京东"
-            lowerPackage.contains("douyin") || lowerPackage.contains("tiktok") -> "抖音"
-            lowerPackage.contains("kuaishou") -> "快手"
-            lowerPackage.contains("bilibili") -> "B站"
-            lowerPackage.contains("weibo") -> "微博"
-            lowerPackage.contains("meituan") -> "美团"
-            lowerPackage.contains("eleme") -> "饿了么"
-            lowerPackage.contains("didi") -> "滴滴"
-            lowerPackage.contains("baidu") -> "百度"
-            lowerPackage.contains("qq") -> "QQ"
-            lowerPackage.contains("chrome") -> "Chrome"
-            lowerPackage.contains("settings") -> "设置"
-            lowerPackage.contains("launcher") -> "桌面"
-            lowerPackage.contains("dialer") || lowerPackage.contains("phone") -> "电话"
-            lowerPackage.contains("contacts") -> "联系人"
-            lowerPackage.contains("messaging") || lowerPackage.contains("mms") -> "短信"
-            lowerPackage.contains("camera") -> "相机"
-            lowerPackage.contains("gallery") || lowerPackage.contains("photos") -> "相册"
-            lowerPackage.contains("calendar") -> "日历"
-            lowerPackage.contains("clock") || lowerPackage.contains("alarm") -> "时钟"
-            lowerPackage.contains("calculator") -> "计算器"
-            lowerPackage.contains("filemanager") || lowerPackage.contains("files") -> "文件管理"
-            else -> packageName.substringAfterLast(".")
-        }
     }
-
-    companion object {
-        /**
-         * 应用关键词映射
-         */
-        val APP_KEYWORDS = mapOf(
-            "微信" to "微信",
-            "wechat" to "微信",
-            "支付宝" to "支付宝",
-            "alipay" to "支付宝",
-            "淘宝" to "淘宝",
-            "taobao" to "淘宝",
-            "京东" to "京东",
-            "jd" to "京东",
-            "抖音" to "抖音",
-            "douyin" to "抖音",
-            "tiktok" to "抖音",
-            "快手" to "快手",
-            "b站" to "哔哩哔哩",
-            "bilibili" to "哔哩哔哩",
-            "微博" to "微博",
-            "weibo" to "微博",
-            "美团" to "美团",
-            "meituan" to "美团",
-            "饿了么" to "饿了么",
-            "滴滴" to "滴滴出行",
-            "百度" to "百度",
-            "qq" to "QQ",
-            "设置" to "设置",
-            "settings" to "设置",
-            "相机" to "相机",
-            "camera" to "相机",
-            "相册" to "相册",
-            "photos" to "相册",
-            "gallery" to "相册",
-            "日历" to "日历",
-            "calendar" to "日历",
-            "时钟" to "时钟",
-            "闹钟" to "时钟",
-            "计算器" to "计算器",
-            "calculator" to "计算器"
-        )
-    }
-}

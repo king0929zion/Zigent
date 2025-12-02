@@ -10,6 +10,8 @@ import com.zigent.agent.models.UiElement
 import com.zigent.utils.Logger
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import org.xmlpull.v1.XmlPullParser
 import org.xmlpull.v1.XmlPullParserFactory
@@ -33,28 +35,33 @@ class ScreenAnalyzer @Inject constructor(
     /**
      * 获取当前屏幕状态
      * 优先使用无障碍服务，备选使用ADB
+     * 使用并行操作提高效率
      */
     suspend fun captureScreenState(): ScreenState = withContext(Dispatchers.IO) {
-        // 获取包名和Activity
-        val packageName = getPackageName()
-        val activityName = getActivityName()
-        
-        // 获取UI元素
-        val uiElements = captureUiElements()
-        
-        // 获取截图
-        val screenshotBase64 = captureScreenshotBase64()
-        
-        // 生成屏幕描述
-        val description = generateScreenDescription(packageName, activityName, uiElements)
-        
-        ScreenState(
-            packageName = packageName,
-            activityName = activityName,
-            screenDescription = description,
-            uiElements = uiElements,
-            screenshotBase64 = screenshotBase64
-        )
+        coroutineScope {
+            // 并行获取各项数据
+            val packageNameDeferred = async { getPackageName() }
+            val activityNameDeferred = async { getActivityName() }
+            val uiElementsDeferred = async { captureUiElements() }
+            val screenshotDeferred = async { captureScreenshotBase64() }
+            
+            // 等待所有结果
+            val packageName = packageNameDeferred.await()
+            val activityName = activityNameDeferred.await()
+            val uiElements = uiElementsDeferred.await()
+            val screenshotBase64 = screenshotDeferred.await()
+            
+            // 生成屏幕描述
+            val description = generateScreenDescription(packageName, activityName, uiElements)
+            
+            ScreenState(
+                packageName = packageName,
+                activityName = activityName,
+                screenDescription = description,
+                uiElements = uiElements,
+                screenshotBase64 = screenshotBase64
+            )
+        }
     }
 
     /**
