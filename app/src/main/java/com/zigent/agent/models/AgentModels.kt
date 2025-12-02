@@ -210,3 +210,14 @@ data class AiDecision(
     val confidence: Float = 1.0f            // 置信度
 )
 
+/**
+ * 任务分析结果
+ */
+data class TaskAnalysis(
+    val originalTask: String,               // 原始任务描述
+    val needsExecution: Boolean,            // 是否需要执行手机操作
+    val isSimpleChat: Boolean,              // 是否是简单对话
+    val targetApp: String? = null,          // 目标应用名称
+    val estimatedSteps: Int = 0             // 预估步骤数
+)
+
