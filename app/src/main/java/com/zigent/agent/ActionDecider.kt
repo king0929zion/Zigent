@@ -542,4 +542,10 @@ class ActionDecider(
         )
     }
 
+    /**
+     * 测试 AI 连接
+     */
+    suspend fun testConnection(): Boolean {
+        return aiClient.testConnection().getOrDefault(false)
     }
+}
