@@ -328,7 +328,7 @@ class ActionDecider(
                 description = description,
                 x = arguments.get("x")?.asInt,
                 y = arguments.get("y")?.asInt,
-                duration = arguments.get("duration")?.asInt ?: 800
+                duration = arguments.get("duration")?.asLong ?: 800L
             )
             "double_tap" -> AgentAction(
                 type = ActionType.DOUBLE_TAP,
@@ -365,7 +365,7 @@ class ActionDecider(
                 startY = arguments.get("start_y")?.asInt,
                 endX = arguments.get("end_x")?.asInt,
                 endY = arguments.get("end_y")?.asInt,
-                duration = arguments.get("duration")?.asInt ?: 300
+                duration = arguments.get("duration")?.asLong ?: 300L
             )
             
             // 输入操作
