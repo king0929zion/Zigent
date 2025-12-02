@@ -88,8 +88,11 @@ object AppUtils {
     /**
      * 根据应用名获取包名
      * 支持各种变体，如 "抖音"、"抖音app"、"打开抖音" 等
+     * 
+     * @param appName 应用名称
+     * @param context 可选的 Context，用于从已安装应用中查找
      */
-    fun getPackageName(appName: String): String? {
+    fun getPackageName(appName: String, context: android.content.Context? = null): String? {
         // 清理应用名：移除常见修饰词
         val cleanName = appName
             .replace("打开", "")
@@ -132,6 +135,11 @@ object AppUtils {
         )
         aliases[cleanName]?.let { aliasName ->
             APP_PACKAGE_MAP[aliasName]?.let { return it }
+        }
+        
+        // 5. 如果提供了 Context，从已安装应用中查找
+        context?.let { ctx ->
+            InstalledAppsHelper.findPackageByName(ctx, cleanName)?.let { return it }
         }
         
         return null

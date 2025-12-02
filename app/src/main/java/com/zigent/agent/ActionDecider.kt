@@ -39,6 +39,25 @@ class ActionDecider(
     private var lastScreenDescription: String? = null
     private var lastScreenDescriptionTime: Long = 0
     private val DESCRIPTION_CACHE_TIMEOUT = 5000L  // 5秒缓存
+    
+    // 设备上下文（已安装应用、初始屏幕状态等）
+    private var deviceContext: DeviceContext? = null
+    
+    /**
+     * 设备上下文信息
+     */
+    data class DeviceContext(
+        val installedAppsText: String,     // 已安装应用列表文本
+        val initialScreenState: String?    // 初始屏幕状态描述
+    )
+    
+    /**
+     * 设置设备上下文
+     */
+    fun setDeviceContext(context: DeviceContext) {
+        deviceContext = context
+        Logger.i("Device context set: apps=${context.installedAppsText.length} chars", TAG)
+    }
 
     /**
      * 主决策入口
@@ -203,6 +222,22 @@ class ActionDecider(
         vlmDescription: String?
     ): String {
         val sb = StringBuilder()
+        
+        // 设备上下文（首次执行时的应用列表和初始屏幕）
+        deviceContext?.let { ctx ->
+            // 已安装应用（帮助 AI 知道可以打开哪些应用）
+            if (ctx.installedAppsText.isNotEmpty()) {
+                sb.appendLine(ctx.installedAppsText)
+                sb.appendLine()
+            }
+            
+            // 初始屏幕状态（如果是第一步且有初始状态）
+            if (history.isEmpty() && !ctx.initialScreenState.isNullOrBlank()) {
+                sb.appendLine("## 初始屏幕状态")
+                sb.appendLine(ctx.initialScreenState.take(500))
+                sb.appendLine()
+            }
+        }
         
         // 任务描述
         sb.appendLine("## 用户任务")

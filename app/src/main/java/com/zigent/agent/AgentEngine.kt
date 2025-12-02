@@ -6,6 +6,7 @@ import com.zigent.agent.models.*
 import com.zigent.ai.AiConfig
 import com.zigent.ai.AiSettings
 import com.zigent.shizuku.ShizukuManager
+import com.zigent.utils.InstalledAppsHelper
 import com.zigent.utils.Logger
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
@@ -204,9 +205,14 @@ class AgentEngine @Inject constructor(
         val startTime = System.currentTimeMillis()
         
         try {
-            // 1. 分析任务类型
+            // 0. 准备设备上下文（已安装应用列表 + 初始屏幕状态）
             _state.value = AgentState.ANALYZING
             callback?.onStateChanged(AgentState.ANALYZING)
+            callback?.onProgress("正在获取设备信息...")
+            
+            prepareDeviceContext()
+            
+            // 1. 分析任务类型
             callback?.onProgress("正在分析任务...")
             
             val taskAnalysis = analyzeTask(task)
@@ -242,6 +248,72 @@ class AgentEngine @Inject constructor(
             callback?.onStateChanged(AgentState.FAILED)
             callback?.onTaskFailed("执行出错: ${e.message}")
         }
+    }
+    
+    /**
+     * 准备设备上下文
+     * 获取已安装应用列表和当前屏幕状态
+     */
+    private suspend fun prepareDeviceContext() = withContext(Dispatchers.IO) {
+        val decider = actionDecider ?: return@withContext
+        
+        try {
+            // 并行获取应用列表和屏幕状态
+            coroutineScope {
+                val appsDeferred = async {
+                    InstalledAppsHelper.generateAppsContext(context)
+                }
+                val screenDeferred = async {
+                    try {
+                        val screen = screenAnalyzer.captureScreenState()
+                        generateInitialScreenDescription(screen)
+                    } catch (e: Exception) {
+                        Logger.e("Failed to capture initial screen", e, TAG)
+                        null
+                    }
+                }
+                
+                val appsContext = appsDeferred.await()
+                val initialScreen = screenDeferred.await()
+                
+                // 设置设备上下文
+                decider.setDeviceContext(
+                    ActionDecider.DeviceContext(
+                        installedAppsText = appsContext,
+                        initialScreenState = initialScreen
+                    )
+                )
+                
+                Logger.i("Device context prepared: apps=${appsContext.length} chars, screen=${initialScreen?.length ?: 0} chars", TAG)
+            }
+        } catch (e: Exception) {
+            Logger.e("Failed to prepare device context", e, TAG)
+        }
+    }
+    
+    /**
+     * 生成初始屏幕描述
+     */
+    private fun generateInitialScreenDescription(screen: ScreenState): String {
+        val sb = StringBuilder()
+        
+        sb.appendLine("当前位于: ${com.zigent.utils.AppUtils.getAppName(screen.packageName)}")
+        screen.activityName?.let {
+            sb.appendLine("页面: ${it.substringAfterLast(".")}")
+        }
+        
+        // 主要可交互元素
+        val clickables = screen.uiElements.filter { it.isClickable }.take(10)
+        val editables = screen.uiElements.filter { it.isEditable }.take(5)
+        
+        if (clickables.isNotEmpty()) {
+            sb.appendLine("可点击: ${clickables.map { it.text.ifEmpty { it.description }.take(15) }.filter { it.isNotEmpty() }.joinToString(", ")}")
+        }
+        if (editables.isNotEmpty()) {
+            sb.appendLine("输入框: ${editables.size} 个")
+        }
+        
+        return sb.toString()
     }
 
     /**

@@ -587,8 +587,8 @@ class ActionExecutor @Inject constructor(
      */
     private suspend fun executeOpenApp(action: AgentAction): ExecutionResult {
         val packageName = action.packageName 
-            ?: action.appName?.let { com.zigent.utils.AppUtils.getPackageName(it) }
-            ?: return ExecutionResult(false, errorMessage = "未知的应用")
+            ?: action.appName?.let { com.zigent.utils.AppUtils.getPackageName(it, context) }
+            ?: return ExecutionResult(false, errorMessage = "未知的应用: ${action.appName}")
         
         // 方法1：使用Intent启动（最可靠）
         try {
@@ -618,8 +618,8 @@ class ActionExecutor @Inject constructor(
      */
     private suspend fun executeCloseApp(action: AgentAction): ExecutionResult {
         val packageName = action.packageName 
-            ?: action.appName?.let { com.zigent.utils.AppUtils.getPackageName(it) }
-            ?: return ExecutionResult(false, errorMessage = "未知的应用")
+            ?: action.appName?.let { com.zigent.utils.AppUtils.getPackageName(it, context) }
+            ?: return ExecutionResult(false, errorMessage = "未知的应用: ${action.appName}")
         
         val success = adbManager.forceStopApp(packageName)
         return if (success) {
