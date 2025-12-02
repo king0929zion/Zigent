@@ -100,12 +100,16 @@ class FloatingInteractionController(
             }
 
             override fun onStepStarted(step: Int, description: String) {
-                callback?.onTaskProgress("步骤$step: $description")
+                Logger.i("Step $step started: $description", TAG)
+                callback?.onTaskProgress(description)
             }
 
             override fun onStepCompleted(step: Int, success: Boolean, message: String) {
-                val status = if (success) "完成" else "失败"
+                val status = if (success) "✓" else "✗"
                 Logger.d("Step $step $status: $message", TAG)
+                if (!success) {
+                    callback?.onTaskProgress("第${step}步失败: ${message.take(30)}")
+                }
             }
 
             override fun onProgress(message: String) {

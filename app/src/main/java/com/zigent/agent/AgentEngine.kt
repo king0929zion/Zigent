@@ -401,13 +401,27 @@ class AgentEngine @Inject constructor(
             
             stepCount++
             Logger.d("=== Step $stepCount ===", TAG)
-            callback?.onStepStarted(stepCount, "分析屏幕...")
+            callback?.onStepStarted(stepCount, "第${stepCount}步: 分析屏幕")
+            callback?.onProgress("第${stepCount}步: 正在分析屏幕...")
             
-            // 1. 采集屏幕状态
+            // 1. 采集屏幕状态（添加超时保护）
             val screenState = try {
-                captureScreen()
+                withTimeoutOrNull(10_000L) {
+                    captureScreen()
+                } ?: run {
+                    Logger.w("Screen capture timeout", TAG)
+                    callback?.onProgress("屏幕采集超时，使用简化信息...")
+                    ScreenState(
+                        packageName = "unknown",
+                        activityName = null,
+                        screenDescription = "屏幕采集超时",
+                        uiElements = emptyList(),
+                        screenshotBase64 = null
+                    )
+                }
             } catch (e: Exception) {
                 Logger.e("Screen capture failed", e, TAG)
+                callback?.onProgress("屏幕采集失败: ${e.message?.take(50)}")
                 ScreenState(
                     packageName = "unknown",
                     activityName = null,
@@ -418,7 +432,7 @@ class AgentEngine @Inject constructor(
             }
             
             // 2. AI决策
-            callback?.onProgress("AI正在思考...")
+            callback?.onProgress("第${stepCount}步: AI正在分析...")
             val decision = makeDecision(task, screenState)
             
             Logger.d("AI thought: ${decision.thought}", TAG)
@@ -485,13 +499,16 @@ class AgentEngine @Inject constructor(
                         continue
                     }
                     
-                    callback?.onProgress("正在分析屏幕...")
+                    callback?.onProgress("第${stepCount}步: 使用视觉模型分析屏幕...")
                     
                     try {
-                        val vlmDescription = actionDecider?.describeScreen(
-                            screenState.screenshotBase64,
-                            decision.action.text  // focus
-                        )
+                        // 添加 VLM 调用超时保护
+                        val vlmDescription = withTimeoutOrNull(45_000L) {
+                            actionDecider?.describeScreen(
+                                screenState.screenshotBase64,
+                                decision.action.text  // focus
+                            )
+                        }
                         
                         if (vlmDescription != null) {
                             Logger.i("VLM description obtained, re-deciding...", TAG)
@@ -542,8 +559,23 @@ class AgentEngine @Inject constructor(
             }
             
             // 4. 执行操作
-            callback?.onProgress("执行: ${decision.action.description}")
-            val result = actionExecutor.execute(decision.action)
+            val actionDesc = decision.action.description.take(50)
+            callback?.onProgress("第${stepCount}步: 执行 - $actionDesc")
+            Logger.i("Executing action: ${decision.action.type} - $actionDesc", TAG)
+            
+            val result = try {
+                withTimeoutOrNull(30_000L) {
+                    actionExecutor.execute(decision.action)
+                } ?: run {
+                    Logger.w("Action execution timeout", TAG)
+                    callback?.onProgress("操作执行超时")
+                    com.zigent.agent.ActionResult(false, "操作超时", "执行超时，请重试")
+                }
+            } catch (e: Exception) {
+                Logger.e("Action execution failed", e, TAG)
+                callback?.onProgress("操作执行失败: ${e.message?.take(50)}")
+                com.zigent.agent.ActionResult(false, null, e.message)
+            }
             
             // 5. 操作验证（如果启用）
             var verificationResult: VerificationResult? = null
@@ -671,7 +703,35 @@ class AgentEngine @Inject constructor(
      */
     private suspend fun makeDecision(task: String, screenState: ScreenState): AiDecision {
         val decider = actionDecider ?: throw IllegalStateException("ActionDecider not initialized")
-        return decider.decide(task, screenState, executionHistory)
+        
+        // 添加超时保护，防止 AI 调用卡死
+        return try {
+            withTimeoutOrNull(60_000L) {  // 60 秒超时
+                decider.decide(task, screenState, executionHistory)
+            } ?: run {
+                Logger.e("AI decision timeout after 60 seconds", TAG)
+                callback?.onProgress("AI 响应超时，正在重试...")
+                AiDecision(
+                    thought = "AI响应超时",
+                    action = AgentAction(
+                        type = ActionType.WAIT,
+                        description = "等待重试",
+                        waitTime = 2000L
+                    )
+                )
+            }
+        } catch (e: Exception) {
+            Logger.e("AI decision failed", e, TAG)
+            callback?.onProgress("AI 决策失败: ${e.message}")
+            AiDecision(
+                thought = "AI调用异常: ${e.message}",
+                action = AgentAction(
+                    type = ActionType.FAILED,
+                    description = "AI服务异常",
+                    resultMessage = e.message
+                )
+            )
+        }
     }
 
     /**
