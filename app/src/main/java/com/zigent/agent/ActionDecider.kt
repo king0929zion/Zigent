@@ -224,15 +224,32 @@ class ActionDecider(
 
     /**
      * 解析文本响应（当AI没有使用工具时）
+     * 注意：不要轻易判定为完成，优先尝试解析为操作
      */
     private fun parseTextResponse(text: String, reasoning: String?): AiDecision {
         val thought = reasoning ?: text.take(100)
+        Logger.d("Parsing text response: ${text.take(300)}", TAG)
         
-        // 尝试从文本中推断操作
+        // 首先尝试解析为 JSON（兼容旧模式）
+        val jsonDecision = try {
+            parseAiResponse(text)
+        } catch (e: Exception) {
+            null
+        }
+        
+        // 如果 JSON 解析成功且不是 FAILED，使用它
+        if (jsonDecision != null && jsonDecision.action.type != ActionType.FAILED) {
+            Logger.i("Parsed as JSON action: ${jsonDecision.action.type}", TAG)
+            return jsonDecision
+        }
+        
+        // 尝试从文本中提取操作
         val textLower = text.lowercase()
         
-        // 检查是否表示完成
-        if (textLower.contains("完成") || textLower.contains("finished") || textLower.contains("成功")) {
+        // 检查是否明确表示任务完成（需要更严格的匹配）
+        if ((textLower.contains("任务已完成") || textLower.contains("已成功完成") || 
+             textLower.contains("task completed") || textLower.contains("task finished")) &&
+            !textLower.contains("需要") && !textLower.contains("下一步")) {
             return AiDecision(
                 thought = thought,
                 action = AgentAction(
@@ -243,8 +260,9 @@ class ActionDecider(
             )
         }
         
-        // 检查是否表示失败
-        if (textLower.contains("失败") || textLower.contains("无法") || textLower.contains("failed")) {
+        // 检查是否明确表示失败
+        if (textLower.contains("无法完成") || textLower.contains("任务失败") || 
+            textLower.contains("cannot complete") || textLower.contains("task failed")) {
             return AiDecision(
                 thought = thought,
                 action = AgentAction(
@@ -256,7 +274,8 @@ class ActionDecider(
         }
         
         // 检查是否是询问
-        if (text.contains("？") || text.contains("?")) {
+        if ((text.contains("？") || text.contains("?")) && 
+            (textLower.contains("请问") || textLower.contains("需要确认") || textLower.contains("你想"))) {
             return AiDecision(
                 thought = thought,
                 action = AgentAction(
@@ -267,8 +286,16 @@ class ActionDecider(
             )
         }
         
-        // 默认：尝试解析为 JSON（兼容旧模式）
-        return parseAiResponse(text)
+        // 默认：AI 没有正确使用工具，等待下一轮重试
+        Logger.w("AI did not use tools, text response: ${text.take(100)}", TAG)
+        return AiDecision(
+            thought = "AI返回文本而非工具调用，需要重试",
+            action = AgentAction(
+                type = ActionType.WAIT,
+                description = "等待重试",
+                waitTime = 1000L
+            )
+        )
     }
 
     /**

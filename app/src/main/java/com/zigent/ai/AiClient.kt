@@ -141,7 +141,7 @@ class AiClient(private val settings: AiSettings) {
                 model = settings.model.ifBlank { defaultModel },
                 messages = allMessages,
                 tools = tools,
-                toolChoice = "auto",
+                toolChoice = "required",  // 强制使用工具
                 maxTokens = settings.maxTokens,
                 temperature = settings.temperature
             )
