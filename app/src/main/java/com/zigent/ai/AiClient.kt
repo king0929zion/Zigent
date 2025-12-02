@@ -52,6 +52,117 @@ class AiClient(private val settings: AiSettings) {
     }
 
     /**
+     * 发送带工具的聊天请求（Function Calling）
+     */
+    suspend fun chatWithTools(
+        messages: List<ChatMessage>,
+        tools: List<Tool>,
+        systemPrompt: String? = null
+    ): Result<ToolCall?> = withContext(Dispatchers.IO) {
+        when (settings.provider) {
+            AiProvider.SILICONFLOW -> chatOpenAiWithTools(messages, tools, systemPrompt, SILICONFLOW_BASE_URL)
+            AiProvider.OPENAI -> chatOpenAiWithTools(messages, tools, systemPrompt, OPENAI_BASE_URL)
+            AiProvider.CUSTOM -> chatOpenAiWithTools(messages, tools, systemPrompt, settings.baseUrl)
+            AiProvider.CLAUDE -> Result.failure(Exception("Claude不支持Function Calling，请使用硅基流动或OpenAI"))
+        }
+    }
+
+    /**
+     * OpenAI兼容格式 带工具的聊天请求
+     */
+    private fun chatOpenAiWithTools(
+        messages: List<ChatMessage>,
+        tools: List<Tool>,
+        systemPrompt: String?,
+        baseUrl: String = OPENAI_BASE_URL
+    ): Result<ToolCall?> {
+        try {
+            val allMessages = buildList<Any> {
+                if (!systemPrompt.isNullOrBlank()) {
+                    add(mapOf("role" to "system", "content" to systemPrompt))
+                }
+                messages.forEach { msg ->
+                    add(mapOf(
+                        "role" to msg.role.name.lowercase(),
+                        "content" to msg.content
+                    ))
+                }
+            }
+
+            val defaultModel = when (settings.provider) {
+                AiProvider.SILICONFLOW -> AiConfig.SILICONFLOW_MODEL
+                else -> AiConfig.DEFAULT_MODEL_OPENAI
+            }
+
+            val request = ToolRequest(
+                model = settings.model.ifBlank { defaultModel },
+                messages = allMessages,
+                tools = tools,
+                toolChoice = "auto",
+                maxTokens = settings.maxTokens,
+                temperature = settings.temperature
+            )
+
+            val actualBaseUrl = baseUrl.trimEnd('/')
+
+            val httpRequest = Request.Builder()
+                .url("$actualBaseUrl/chat/completions")
+                .addHeader("Authorization", "Bearer ${settings.apiKey}")
+                .addHeader("Content-Type", "application/json")
+                .post(gson.toJson(request).toRequestBody("application/json".toMediaType()))
+                .build()
+
+            Logger.d("Tool request: ${gson.toJson(request).take(1000)}", TAG)
+
+            val response = httpClient.newCall(httpRequest).execute()
+            val responseBody = response.body?.string() ?: ""
+
+            Logger.d("Tool response: ${responseBody.take(1000)}", TAG)
+
+            if (!response.isSuccessful) {
+                return Result.failure(Exception("API error: ${response.code} - $responseBody"))
+            }
+
+            val toolResponse = gson.fromJson(responseBody, ToolResponse::class.java)
+            
+            if (toolResponse.error != null) {
+                return Result.failure(Exception("API error: ${toolResponse.error.message}"))
+            }
+
+            val choice = toolResponse.choices?.firstOrNull()
+            
+            // 检查是否有工具调用
+            val toolCall = choice?.message?.toolCalls?.firstOrNull()
+            
+            if (toolCall != null) {
+                Logger.i("Tool call: ${toolCall.function.name}(${toolCall.function.arguments})", TAG)
+                return Result.success(toolCall)
+            }
+            
+            // 没有工具调用，可能是普通回复
+            val content = choice?.message?.content
+            if (!content.isNullOrBlank()) {
+                Logger.d("No tool call, text response: $content", TAG)
+                // 创建一个虚拟的 finished 调用
+                return Result.success(ToolCall(
+                    id = "text_response",
+                    type = "function",
+                    function = FunctionCall(
+                        name = "finished",
+                        arguments = gson.toJson(mapOf("message" to content))
+                    )
+                ))
+            }
+            
+            return Result.success(null)
+
+        } catch (e: Exception) {
+            Logger.e("Tool API call failed", e, TAG)
+            return Result.failure(e)
+        }
+    }
+
+    /**
      * 发送带图片的聊天请求（多模态）
      */
     suspend fun chatWithImage(

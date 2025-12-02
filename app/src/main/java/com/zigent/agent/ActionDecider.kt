@@ -8,6 +8,7 @@ import com.zigent.ai.AiClient
 import com.zigent.ai.AiSettings
 import com.zigent.ai.models.ChatMessage
 import com.zigent.ai.models.MessageRole
+import com.zigent.ai.models.ToolCall
 import com.zigent.utils.Logger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -15,6 +16,7 @@ import kotlinx.coroutines.withContext
 /**
  * 操作决策器
  * 调用AI分析屏幕状态并决定下一步操作
+ * 支持 Function Calling（工具调用）模式
  */
 class ActionDecider(
     private val aiSettings: AiSettings
@@ -25,6 +27,9 @@ class ActionDecider(
 
     private val aiClient = AiClient(aiSettings)
     private val gson = Gson()
+    
+    // 是否使用 Function Calling 模式
+    var useFunctionCalling: Boolean = true
 
     /**
      * 决定下一步操作（带图片，使用多模态AI）
@@ -34,6 +39,11 @@ class ActionDecider(
         screenState: ScreenState,
         history: List<AgentStep>
     ): AiDecision = withContext(Dispatchers.IO) {
+        
+        // 优先使用 Function Calling 模式
+        if (useFunctionCalling) {
+            return@withContext decideWithFunctionCalling(task, screenState, history)
+        }
         
         val prompt = PromptBuilder.buildVisionActionPrompt(task, screenState, history)
         
@@ -80,6 +90,11 @@ class ActionDecider(
         history: List<AgentStep>
     ): AiDecision = withContext(Dispatchers.IO) {
         
+        // 优先使用 Function Calling 模式
+        if (useFunctionCalling) {
+            return@withContext decideWithFunctionCalling(task, screenState, history)
+        }
+        
         val prompt = PromptBuilder.buildActionPrompt(task, screenState, history)
         
         Logger.d("Text prompt: ${prompt.take(500)}...", TAG)
@@ -105,6 +120,244 @@ class ActionDecider(
                     )
                 )
             }
+        )
+    }
+
+    /**
+     * 使用 Function Calling 决定下一步操作
+     */
+    suspend fun decideWithFunctionCalling(
+        task: String,
+        screenState: ScreenState,
+        history: List<AgentStep>
+    ): AiDecision = withContext(Dispatchers.IO) {
+        
+        val prompt = buildFunctionCallingPrompt(task, screenState, history)
+        Logger.d("Function calling prompt: ${prompt.take(500)}...", TAG)
+        
+        val messages = listOf(
+            ChatMessage(MessageRole.USER, prompt)
+        )
+        
+        val result = aiClient.chatWithTools(
+            messages = messages,
+            tools = AgentTools.ALL_TOOLS,
+            systemPrompt = AgentTools.SYSTEM_PROMPT
+        )
+        
+        result.fold(
+            onSuccess = { toolCall ->
+                if (toolCall != null) {
+                    parseToolCall(toolCall)
+                } else {
+                    AiDecision(
+                        thought = "AI没有返回操作",
+                        action = AgentAction(
+                            type = ActionType.FAILED,
+                            description = "无法获取下一步操作",
+                            resultMessage = "AI响应为空"
+                        )
+                    )
+                }
+            },
+            onFailure = { error ->
+                Logger.e("Function calling failed", error, TAG)
+                // 降级到普通模式
+                Logger.w("Falling back to text mode", TAG)
+                useFunctionCalling = false
+                decide(task, screenState, history)
+            }
+        )
+    }
+
+    /**
+     * 构建 Function Calling 的提示词
+     */
+    private fun buildFunctionCallingPrompt(
+        task: String,
+        screenState: ScreenState,
+        history: List<AgentStep>
+    ): String {
+        val sb = StringBuilder()
+        
+        sb.appendLine("任务：$task")
+        sb.appendLine()
+        sb.appendLine("当前应用：${screenState.packageName}")
+        screenState.activityName?.let { sb.appendLine("当前页面：$it") }
+        sb.appendLine()
+        
+        // 简化的元素列表
+        if (screenState.uiElements.isNotEmpty()) {
+            sb.appendLine("屏幕元素：")
+            screenState.uiElements.take(15).forEachIndexed { index, elem ->
+                val content = elem.text.ifEmpty { elem.description }.take(20)
+                if (content.isNotEmpty() || elem.isClickable || elem.isEditable) {
+                    val type = when {
+                        elem.isEditable -> "[输入框]"
+                        elem.isClickable -> "[可点击]"
+                        else -> ""
+                    }
+                    sb.appendLine("$index.\"$content\" (${elem.bounds.centerX},${elem.bounds.centerY}) $type")
+                }
+            }
+            sb.appendLine()
+        }
+        
+        // 历史操作
+        if (history.isNotEmpty()) {
+            sb.appendLine("已执行：")
+            history.takeLast(3).forEach { step ->
+                val s = if (step.success) "✓" else "✗"
+                sb.appendLine("$s ${step.action.type}: ${step.action.description}")
+            }
+            sb.appendLine()
+        }
+        
+        sb.appendLine("请调用合适的工具执行下一步操作。")
+        
+        return sb.toString()
+    }
+
+    /**
+     * 解析工具调用结果
+     */
+    private fun parseToolCall(toolCall: ToolCall): AiDecision {
+        val functionName = toolCall.function.name
+        val arguments = try {
+            gson.fromJson(toolCall.function.arguments, JsonObject::class.java)
+        } catch (e: Exception) {
+            Logger.e("Failed to parse tool arguments: ${toolCall.function.arguments}", e, TAG)
+            JsonObject()
+        }
+        
+        Logger.i("Parsing tool call: $functionName with args: $arguments", TAG)
+        
+        val description = arguments.get("description")?.asString ?: functionName
+        
+        val action = when (functionName) {
+            // 点击操作
+            "tap" -> AgentAction(
+                type = ActionType.TAP,
+                description = description,
+                x = arguments.get("x")?.asInt,
+                y = arguments.get("y")?.asInt
+            )
+            "long_press" -> AgentAction(
+                type = ActionType.LONG_PRESS,
+                description = description,
+                x = arguments.get("x")?.asInt,
+                y = arguments.get("y")?.asInt,
+                duration = arguments.get("duration")?.asInt ?: 800
+            )
+            "double_tap" -> AgentAction(
+                type = ActionType.DOUBLE_TAP,
+                description = description,
+                x = arguments.get("x")?.asInt,
+                y = arguments.get("y")?.asInt
+            )
+            
+            // 滑动操作
+            "swipe_up" -> AgentAction(
+                type = ActionType.SWIPE_UP,
+                description = description,
+                swipeDistance = arguments.get("distance")?.asInt ?: 50
+            )
+            "swipe_down" -> AgentAction(
+                type = ActionType.SWIPE_DOWN,
+                description = description,
+                swipeDistance = arguments.get("distance")?.asInt ?: 50
+            )
+            "swipe_left" -> AgentAction(
+                type = ActionType.SWIPE_LEFT,
+                description = description,
+                swipeDistance = arguments.get("distance")?.asInt ?: 30
+            )
+            "swipe_right" -> AgentAction(
+                type = ActionType.SWIPE_RIGHT,
+                description = description,
+                swipeDistance = arguments.get("distance")?.asInt ?: 30
+            )
+            "swipe" -> AgentAction(
+                type = ActionType.SWIPE,
+                description = description,
+                startX = arguments.get("start_x")?.asInt,
+                startY = arguments.get("start_y")?.asInt,
+                endX = arguments.get("end_x")?.asInt,
+                endY = arguments.get("end_y")?.asInt,
+                duration = arguments.get("duration")?.asInt ?: 300
+            )
+            
+            // 输入操作
+            "input_text" -> AgentAction(
+                type = ActionType.INPUT_TEXT,
+                description = description,
+                text = arguments.get("text")?.asString ?: ""
+            )
+            "clear_text" -> AgentAction(
+                type = ActionType.CLEAR_TEXT,
+                description = description
+            )
+            
+            // 按键操作
+            "press_back" -> AgentAction(
+                type = ActionType.PRESS_BACK,
+                description = description
+            )
+            "press_home" -> AgentAction(
+                type = ActionType.PRESS_HOME,
+                description = description
+            )
+            "press_recent" -> AgentAction(
+                type = ActionType.PRESS_RECENT,
+                description = description
+            )
+            
+            // 应用操作
+            "open_app" -> AgentAction(
+                type = ActionType.OPEN_APP,
+                description = description,
+                appName = arguments.get("app")?.asString
+            )
+            "close_app" -> AgentAction(
+                type = ActionType.CLOSE_APP,
+                description = description,
+                appName = arguments.get("app")?.asString
+            )
+            
+            // 等待
+            "wait" -> AgentAction(
+                type = ActionType.WAIT,
+                description = description,
+                waitTime = arguments.get("time")?.asInt ?: 2000
+            )
+            
+            // 任务状态
+            "finished" -> AgentAction(
+                type = ActionType.FINISHED,
+                description = "任务完成",
+                resultMessage = arguments.get("message")?.asString ?: "任务已完成"
+            )
+            "failed" -> AgentAction(
+                type = ActionType.FAILED,
+                description = "任务失败",
+                resultMessage = arguments.get("message")?.asString ?: "任务失败"
+            )
+            "ask_user" -> AgentAction(
+                type = ActionType.ASK_USER,
+                description = "询问用户",
+                question = arguments.get("question")?.asString ?: "需要更多信息"
+            )
+            
+            else -> AgentAction(
+                type = ActionType.FAILED,
+                description = "未知操作: $functionName",
+                resultMessage = "不支持的操作类型"
+            )
+        }
+        
+        return AiDecision(
+            thought = "Tool call: $functionName",
+            action = action
         )
     }
 
