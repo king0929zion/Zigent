@@ -166,12 +166,6 @@ class AiClient(private val settings: AiSettings) {
                 return Result.failure(Exception("API error: ${response.code} - $responseBody"))
             }
 
-            val toolResponse = gson.fromJson(responseBody, ToolResponse::class.java)
-            
-            if (toolResponse.error != null) {
-                return Result.failure(Exception("API error: ${toolResponse.error.message}"))
-            }
-
             // 检查响应是否为空
             if (responseBody.isBlank()) {
                 Logger.e("API returned empty response body", TAG)
