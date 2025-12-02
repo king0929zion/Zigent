@@ -118,7 +118,8 @@ class AgentEngine @Inject constructor(
     private var aiSettings: AiSettings? = null
     
     // 操作验证器
-    private val actionVerifier = ActionVerifier()
+    // ActionVerifier（操作验证器）
+    private val actionVerifier by lazy { ActionVerifier(context) }
     
     // 任务分解器
     private val taskDecomposer = TaskDecomposer()

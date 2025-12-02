@@ -1,5 +1,6 @@
 package com.zigent.agent
 
+import android.content.Context
 import com.zigent.agent.models.*
 import com.zigent.utils.AppUtils
 import com.zigent.utils.Logger
@@ -11,14 +12,16 @@ data class VerificationResult(
     val success: Boolean,           // 验证是否通过
     val message: String,            // 验证消息
     val confidence: Float = 1.0f,   // 置信度 (0-1)
-    val suggestion: String? = null  // 如果失败，给出建议
+    val suggestion: String? = null  // 如果失败,给出建议
 )
 
 /**
  * 操作验证器
  * 验证执行的操作是否达到预期效果
  */
-class ActionVerifier {
+class ActionVerifier(
+    private val context: Context? = null
+) {
     
     companion object {
         private const val TAG = "ActionVerifier"
@@ -84,11 +87,20 @@ class ActionVerifier {
         val appName = action.appName ?: return VerificationResult(false, "未指定应用名")
         
         // 获取预期包名
-        val expectedPackage = action.packageName ?: AppUtils.getPackageName(appName)
+        val expectedPackage = action.packageName ?: AppUtils.getPackageName(appName, context)
+        
+        if (expectedPackage == null) {
+            Logger.w("Unable to find package for app: $appName", TAG)
+            return VerificationResult(
+                success = false,
+                message = "无法找到应用包名: $appName",
+                suggestion = "请检查应用是否已安装或使用完整包名"
+            )
+        }
         
         // 检查当前包名
         val currentPackage = afterState.packageName.lowercase()
-        val expectedLower = expectedPackage?.lowercase() ?: appName.lowercase()
+        val expectedLower = expectedPackage.lowercase()
         
         // 精确匹配
         if (currentPackage == expectedLower) {
@@ -97,13 +109,14 @@ class ActionVerifier {
         
         // 模糊匹配（包名包含应用关键词）
         val appKeywords = listOf(
+            expectedLower,
             appName.lowercase(),
             appName.replace("应用", "").lowercase(),
             appName.replace("app", "").lowercase()
         )
         
         for (keyword in appKeywords) {
-            if (keyword.isNotEmpty() && currentPackage.contains(keyword)) {
+            if (keyword.isNotEmpty() && (currentPackage.contains(keyword) || keyword.contains(currentPackage))) {
                 return VerificationResult(true, "应用已打开: $appName", 0.9f)
             }
         }
@@ -118,9 +131,10 @@ class ActionVerifier {
             )
         }
         
+        Logger.w("App not opened. Expected: $expectedPackage, Current: ${afterState.packageName}", TAG)
         return VerificationResult(
             success = false,
-            message = "应用未打开，当前在: ${AppUtils.getAppName(afterState.packageName)}",
+            message = "应用未打开，当前在: ${AppUtils.getAppName(afterState.packageName)} (${afterState.packageName})",
             suggestion = "尝试重新打开或检查应用是否已安装"
         )
     }

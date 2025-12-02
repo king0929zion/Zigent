@@ -591,16 +591,22 @@ class ActionExecutor @Inject constructor(
      * 执行打开应用
      */
     private suspend fun executeOpenApp(action: AgentAction): ExecutionResult {
+        val appName = action.appName ?: return ExecutionResult(false, errorMessage = "未指定应用名")
+        Logger.i("Opening app: $appName", TAG)
+        
+        // 从应用名获取包名
         val packageName = action.packageName 
-            ?: action.appName?.let { com.zigent.utils.AppUtils.getPackageName(it, context) }
-            ?: return ExecutionResult(false, errorMessage = "未知的应用: ${action.appName}")
+            ?: com.zigent.utils.AppUtils.getPackageName(appName, context)
+            ?: return ExecutionResult(false, errorMessage = "未找到应用: $appName，请检查是否已安装")
+        
+        Logger.i("Resolved package: $packageName for app: $appName", TAG)
         
         // 检查应用是否在允许列表中
         if (!settingsRepository.isAppAllowed(packageName)) {
             Logger.w("App not allowed by restriction settings: $packageName", TAG)
             return ExecutionResult(
                 false, 
-                errorMessage = "应用 ${action.appName ?: packageName} 已被限制操作"
+                errorMessage = "应用 $appName 已被限制操作"
             )
         }
         
@@ -608,22 +614,29 @@ class ActionExecutor @Inject constructor(
         try {
             val launchIntent = context.packageManager.getLaunchIntentForPackage(packageName)
             if (launchIntent != null) {
+                Logger.d("Launching via Intent: $packageName", TAG)
                 launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 context.startActivity(launchIntent)
                 delay(1500) // 等待应用启动
-                return ExecutionResult(true, "打开应用: ${action.appName ?: packageName}")
+                Logger.i("App launched successfully: $appName", TAG)
+                return ExecutionResult(true, "成功打开: $appName")
+            } else {
+                Logger.w("No launch intent found for: $packageName", TAG)
             }
         } catch (e: Exception) {
-            Logger.e("Failed to launch app via Intent", e, TAG)
+            Logger.e("Failed to launch via Intent: $packageName", e, TAG)
         }
         
-        // 方法2：使用ADB
+        // 方法2：使用ADB/Shizuku
+        Logger.d("Attempting to launch via ADB: $packageName", TAG)
         val success = adbManager.startApp(packageName)
         return if (success) {
             delay(1500)
-            ExecutionResult(true, "打开应用: ${action.appName ?: packageName}")
+            Logger.i("App launched via ADB: $appName", TAG)
+            ExecutionResult(true, "成功打开: $appName")
         } else {
-            ExecutionResult(false, errorMessage = "打开应用失败，请确保已安装")
+            Logger.e("Failed to launch app: $appName ($packageName)", TAG)
+            ExecutionResult(false, errorMessage = "无法打开 $appName，请检查应用是否已安装")
         }
     }
 

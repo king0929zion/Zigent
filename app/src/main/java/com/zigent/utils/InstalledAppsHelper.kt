@@ -140,7 +140,7 @@ object InstalledAppsHelper {
     
     /**
      * 生成应用列表的文本描述（用于 AI 上下文）
-     * 提供完整的包名，方便 AI 直接使用
+     * 直接提供应用名，AI 使用应用名即可打开
      */
     fun generateAppsContext(context: Context): String {
         val apps = getInstalledUserApps(context)
@@ -151,12 +151,22 @@ object InstalledAppsHelper {
         
         val sb = StringBuilder()
         sb.appendLine("## 已安装应用列表（共 ${apps.size} 个）")
-        sb.appendLine("格式: 应用名 -> 包名（使用 open_app 时请使用完整包名）")
+        sb.appendLine("调用 open_app 时直接使用应用名即可，无需包名")
         sb.appendLine()
         
-        // 按字母分组显示，提供完整包名
-        apps.forEach { app ->
-            sb.appendLine("- ${app.name} -> ${app.packageName}")
+        // 只显示应用名，按拼音排序
+        apps.forEachIndexed { index, app ->
+            sb.append(app.name)
+            if (index < apps.size - 1) {
+                sb.append("、")
+            }
+            // 每10个应用换行
+            if ((index + 1) % 10 == 0) {
+                sb.appendLine()
+            }
+        }
+        if (apps.size % 10 != 0) {
+            sb.appendLine()
         }
         
         return sb.toString()

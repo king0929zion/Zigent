@@ -191,9 +191,9 @@ object AgentTools {
         // ==================== 应用操作 ====================
         createTool(
             name = "open_app",
-            description = "打开指定的应用程序。支持常见应用名称如：微信、支付宝、抖音、淘宝、设置等。",
+            description = "打开指定的应用程序。直接使用应用名称即可，无需包名。支持所有已安装的应用，请参考上下文中的应用列表。",
             properties = mapOf(
-                "app" to stringProperty("应用名称，如：微信、支付宝、抖音、淘宝、京东、美团、设置等"),
+                "app" to stringProperty("应用名称，必须与已安装应用列表中的名称完全一致，如：微信、支付宝、抖音、淘宝、京东、美团、设置等"),
                 "description" to stringProperty("操作说明")
             ),
             required = listOf("app", "description")
@@ -296,7 +296,7 @@ object AgentTools {
 - `press_enter(description)` - 回车/确认键
 
 ### 应用操作
-- `open_app(app, description)` - 打开应用（支持：微信、抖音、支付宝、淘宝、京东、美团等）
+- `open_app(app, description)` - 打开应用（直接使用应用名，必须与已安装应用列表中的名称完全一致）
 - `close_app(app, description)` - 关闭应用
 
 ### 视觉操作
@@ -341,9 +341,9 @@ object AgentTools {
 ## 示例
 
 任务：打开微信
-→ open_app(app="微信", description="打开微信")
+→ open_app(app="微信", description="打开微信应用")
 屏幕变为微信主页
-→ finished(message="已打开微信")
+→ finished(message="已成功打开微信")
 
 任务：搜索天气
 🔘 "搜索" (540, 120)
