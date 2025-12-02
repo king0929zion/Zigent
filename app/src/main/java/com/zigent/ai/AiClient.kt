@@ -155,12 +155,16 @@ class AiClient(private val settings: AiSettings) {
                 .post(gson.toJson(request).toRequestBody("application/json".toMediaType()))
                 .build()
 
-            Logger.d("Tool request: ${gson.toJson(request).take(1000)}", TAG)
+            val requestJson = gson.toJson(request)
+            Logger.i("=== Tool Request ===", TAG)
+            Logger.d("Request JSON: ${requestJson.take(2000)}", TAG)
 
             val response = httpClient.newCall(httpRequest).execute()
             val responseBody = response.body?.string() ?: ""
 
-            Logger.d("Tool response: ${responseBody.take(1000)}", TAG)
+            Logger.i("=== Tool Response ===", TAG)
+            Logger.i("Response code: ${response.code}", TAG)
+            Logger.d("Response body: ${responseBody.take(2000)}", TAG)
 
             if (!response.isSuccessful) {
                 return Result.failure(Exception("API error: ${response.code} - $responseBody"))

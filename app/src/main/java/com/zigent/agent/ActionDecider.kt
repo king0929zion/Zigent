@@ -197,29 +197,84 @@ class ActionDecider(
         screenState: ScreenState,
         history: List<AgentStep>
     ): AiDecision {
+        Logger.i("=== Parsing Tool Call Result ===", TAG)
+        Logger.i("hasToolCall: ${result.hasToolCall}, hasTextResponse: ${result.hasTextResponse}", TAG)
+        
         // 优先处理工具调用
         if (result.hasToolCall && result.toolCall != null) {
-            Logger.i("Got tool call: ${result.toolCall.function.name}", TAG)
+            Logger.i("Processing tool call: ${result.toolCall.function.name}", TAG)
+            Logger.d("Tool arguments: ${result.toolCall.function.arguments}", TAG)
             return parseToolCall(result.toolCall, result.reasoning)
         }
         
         // 处理纯文本响应
         if (result.hasTextResponse && !result.textResponse.isNullOrBlank()) {
-            Logger.i("Got text response, parsing...", TAG)
-            return parseTextResponse(result.textResponse, result.reasoning)
+            Logger.i("Processing text response (no tool call)", TAG)
+            Logger.d("Text: ${result.textResponse?.take(200)}", TAG)
+            return parseTextResponse(result.textResponse!!, result.reasoning)
         }
         
-        // 空响应 - 自动降级重试
-        Logger.w("Empty response from Function Calling, falling back", TAG)
+        // 空响应 - 记录并尝试普通模式
+        Logger.w("Empty response from Function Calling!", TAG)
+        Logger.w("ToolCall: ${result.toolCall}", TAG)
+        Logger.w("TextResponse: ${result.textResponse}", TAG)
+        Logger.w("Reasoning: ${result.reasoning}", TAG)
+        
         fcFailCount++
+        Logger.i("FC fail count: $fcFailCount / $MAX_FC_FAILS", TAG)
         
         if (fcFailCount >= MAX_FC_FAILS) {
+            Logger.i("Switching to text mode due to repeated failures", TAG)
             useFunctionCalling = false
             fcFailCount = 0
         }
         
-        // 降级重试
-        return decide(task, screenState, history)
+        // 降级到普通模式重试
+        Logger.i("Retrying with text mode...", TAG)
+        return decideWithTextMode(task, screenState, history)
+    }
+    
+    /**
+     * 使用普通文本模式决策（不使用 Function Calling）
+     */
+    private suspend fun decideWithTextMode(
+        task: String,
+        screenState: ScreenState,
+        history: List<AgentStep>
+    ): AiDecision {
+        val prompt = PromptBuilder.buildVisionActionPrompt(task, screenState, history)
+        val imageBase64 = screenState.screenshotBase64
+        
+        Logger.i("=== Text Mode Decision ===", TAG)
+        
+        val result = if (!imageBase64.isNullOrEmpty()) {
+            aiClient.chatWithImage(
+                prompt = prompt,
+                imageBase64 = imageBase64,
+                systemPrompt = PromptBuilder.SYSTEM_PROMPT
+            )
+        } else {
+            val messages = listOf(ChatMessage(MessageRole.USER, prompt))
+            aiClient.chat(messages, PromptBuilder.SYSTEM_PROMPT)
+        }
+        
+        return result.fold(
+            onSuccess = { response ->
+                Logger.i("Text mode response: ${response.take(200)}", TAG)
+                parseAiResponse(response)
+            },
+            onFailure = { error ->
+                Logger.e("Text mode failed", error, TAG)
+                AiDecision(
+                    thought = "AI调用失败: ${error.message}",
+                    action = AgentAction(
+                        type = ActionType.ASK_USER,
+                        description = "需要帮助",
+                        question = "抱歉，我遇到了一些问题。请问您想让我做什么？"
+                    )
+                )
+            }
+        )
     }
 
     /**
