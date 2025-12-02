@@ -5,10 +5,6 @@ import com.zigent.utils.Logger
 import com.zigent.voice.siliconflow.SiliconFlowRecognitionCallback
 import com.zigent.voice.siliconflow.SiliconFlowRecognitionState
 import com.zigent.voice.siliconflow.SiliconFlowSpeechRecognizer
-import com.zigent.voice.xunfei.XunfeiConfig
-import com.zigent.voice.xunfei.XunfeiRecognitionCallback
-import com.zigent.voice.xunfei.XunfeiRecognitionState
-import com.zigent.voice.xunfei.XunfeiSpeechRecognizer
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -42,7 +38,6 @@ data class VoiceInteractionResult(
  */
 enum class SpeechRecognizerType {
     ANDROID_NATIVE, // Android原生
-    XUNFEI,         // 讯飞
     SILICONFLOW     // 硅基流动
 }
 
@@ -66,9 +61,6 @@ class VoiceManager @Inject constructor(
     
     // Android原生语音识别器
     private val nativeRecognizer = VoiceRecognizer(context)
-    
-    // 讯飞语音识别器
-    private val xunfeiRecognizer = XunfeiSpeechRecognizer(context)
     
     // 硅基流动语音识别器
     private val siliconFlowRecognizer = SiliconFlowSpeechRecognizer(context)
@@ -117,15 +109,11 @@ class VoiceManager @Inject constructor(
         
         // 初始化所有识别器的回调
         siliconFlowRecognizer.callback = createSiliconFlowCallback()
-        xunfeiRecognizer.callback = createXunfeiRecognitionCallback()
         nativeRecognizer.callback = createRecognitionCallback()
         
         when (recognizerType) {
             SpeechRecognizerType.SILICONFLOW -> {
                 Logger.i("SiliconFlow recognizer configured", TAG)
-            }
-            SpeechRecognizerType.XUNFEI -> {
-                Logger.i("Xunfei recognizer configured", TAG)
             }
             SpeechRecognizerType.ANDROID_NATIVE -> {
                 nativeRecognizer.initialize()
@@ -180,43 +168,6 @@ class VoiceManager @Inject constructor(
 
             override fun onRecordingProgress(seconds: Int) {
                 _recordingDuration.value = seconds
-            }
-        }
-    }
-    
-    /**
-     * 创建讯飞语音识别回调
-     */
-    private fun createXunfeiRecognitionCallback(): XunfeiRecognitionCallback {
-        return object : XunfeiRecognitionCallback {
-            override fun onResult(text: String, isLast: Boolean) {
-                Logger.d("Xunfei final result: $text, isLast: $isLast", TAG)
-                _lastRecognizedText.value = text
-                _state.value = VoiceInteractionState.IDLE
-                onRecognitionResult?.invoke(VoiceInteractionResult(true, text))
-            }
-
-            override fun onPartialResult(text: String) {
-                Logger.d("Xunfei partial result: $text", TAG)
-                _lastRecognizedText.value = text
-                onRecognitionResult?.invoke(VoiceInteractionResult(true, text, isPartial = true))
-            }
-
-            override fun onError(errorCode: Int, errorMessage: String) {
-                Logger.e("Xunfei error: $errorMessage", null, TAG)
-                _state.value = VoiceInteractionState.ERROR
-                _state.value = VoiceInteractionState.IDLE
-            }
-
-            override fun onStateChanged(state: XunfeiRecognitionState) {
-                _state.value = when (state) {
-                    XunfeiRecognitionState.IDLE -> VoiceInteractionState.IDLE
-                    XunfeiRecognitionState.CONNECTING -> VoiceInteractionState.LISTENING
-                    XunfeiRecognitionState.LISTENING -> VoiceInteractionState.LISTENING
-                    XunfeiRecognitionState.PROCESSING -> VoiceInteractionState.RECOGNIZING
-                    XunfeiRecognitionState.SUCCESS -> VoiceInteractionState.IDLE
-                    XunfeiRecognitionState.ERROR -> VoiceInteractionState.ERROR
-                }
             }
         }
     }
@@ -318,13 +269,6 @@ class VoiceManager @Inject constructor(
                 }
                 siliconFlowRecognizer.startRecording()
             }
-            SpeechRecognizerType.XUNFEI -> {
-                Logger.i("=== Starting Xunfei recognition ===", TAG)
-                if (xunfeiRecognizer.callback == null) {
-                    xunfeiRecognizer.callback = createXunfeiRecognitionCallback()
-                }
-                xunfeiRecognizer.startListening()
-            }
             SpeechRecognizerType.ANDROID_NATIVE -> {
                 Logger.i("=== Starting native recognition ===", TAG)
                 nativeRecognizer.startListening()
@@ -342,7 +286,6 @@ class VoiceManager @Inject constructor(
                 Logger.i("Stopping SiliconFlow recording", TAG)
                 siliconFlowRecognizer.stopRecording()
             }
-            SpeechRecognizerType.XUNFEI -> xunfeiRecognizer.stopListening()
             SpeechRecognizerType.ANDROID_NATIVE -> nativeRecognizer.stopListening()
         }
     }
@@ -354,7 +297,6 @@ class VoiceManager @Inject constructor(
         Logger.i("cancelListening called", TAG)
         when (recognizerType) {
             SpeechRecognizerType.SILICONFLOW -> siliconFlowRecognizer.cancel()
-            SpeechRecognizerType.XUNFEI -> xunfeiRecognizer.cancel()
             SpeechRecognizerType.ANDROID_NATIVE -> nativeRecognizer.cancel()
         }
         _state.value = VoiceInteractionState.IDLE
@@ -412,7 +354,6 @@ class VoiceManager @Inject constructor(
     fun isListening(): Boolean {
         return when (recognizerType) {
             SpeechRecognizerType.SILICONFLOW -> siliconFlowRecognizer.isRecording
-            SpeechRecognizerType.XUNFEI -> xunfeiRecognizer.isListening
             SpeechRecognizerType.ANDROID_NATIVE -> nativeRecognizer.isListening
         }
     }
@@ -444,7 +385,6 @@ class VoiceManager @Inject constructor(
     fun isRecognitionAvailable(): Boolean {
         return when (recognizerType) {
             SpeechRecognizerType.SILICONFLOW -> siliconFlowApiKey.isNotBlank()
-            SpeechRecognizerType.XUNFEI -> XunfeiConfig.isConfigured()
             SpeechRecognizerType.ANDROID_NATIVE -> VoiceRecognizer.isRecognitionAvailable(context)
         }
     }
@@ -454,7 +394,6 @@ class VoiceManager @Inject constructor(
      */
     fun release() {
         nativeRecognizer.release()
-        xunfeiRecognizer.release()
         siliconFlowRecognizer.release()
         tts.release()
         isInitialized = false

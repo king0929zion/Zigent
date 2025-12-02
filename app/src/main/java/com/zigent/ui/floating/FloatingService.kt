@@ -172,17 +172,6 @@ class FloatingService : Service() {
                 } else {
                     Logger.w("No API key configured", TAG)
                 }
-                
-                // 加载讯飞语音设置
-                val xunfeiSettings = settingsRepository.xunfeiSettingsFlow.first()
-                if (xunfeiSettings.isConfigured()) {
-                    com.zigent.voice.xunfei.XunfeiConfig.configure(
-                        xunfeiSettings.appId,
-                        xunfeiSettings.apiKey,
-                        xunfeiSettings.apiSecret
-                    )
-                    Logger.i("Xunfei settings loaded", TAG)
-                }
             } catch (e: Exception) {
                 Logger.e("Failed to load settings", e, TAG)
             }
