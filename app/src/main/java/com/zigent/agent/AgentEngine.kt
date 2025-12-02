@@ -231,11 +231,32 @@ class AgentEngine @Inject constructor(
             val taskAnalysis = analyzeTask(task)
             Logger.i("Task analysis: type=${taskAnalysis.needsExecution}, isChat=${taskAnalysis.isSimpleChat}", TAG)
             
+            // 支付/转账等敏感操作需要用户确认
+            if (taskAnalysis.requiresUserConfirmation && taskAnalysis.needsExecution) {
+                _state.value = AgentState.WAITING_USER
+                callback?.onStateChanged(AgentState.WAITING_USER)
+                callback?.onAskUser("检测到可能涉及支付/转账/下单等敏感操作，是否确认继续执行？")
+                return
+            }
+            
             // 2. 根据任务类型选择执行模式
             if (taskAnalysis.isSimpleChat) {
                 // 简单对话模式
                 executeSimpleChatMode(task)
             } else {
+                // 任务规划：始终先让 AI 规划步骤，便于复杂任务按顺序执行
+                var preplannedTask: com.zigent.agent.DecomposedTask? = null
+                try {
+                    preplannedTask = taskDecomposer.decompose(task)
+                    currentTask = currentTask?.copy(
+                        steps = preplannedTask.subTasks.map { it.description }
+                    )
+                    val summary = taskDecomposer.generateTaskSummary(preplannedTask)
+                    callback?.onProgress(summary)
+                } catch (e: Exception) {
+                    Logger.w("Task decomposition failed, fallback to inline decisions", TAG)
+                }
+                
                 // 检查是否有执行能力
                 val capabilities = getCapabilities()
                 if (!capabilities.canExecuteActions) {
@@ -244,7 +265,7 @@ class AgentEngine @Inject constructor(
                     executeSimpleChatMode(task)
                 } else {
                     // 完整执行模式
-                    executeFullMode(task, taskAnalysis)
+                    executeFullMode(task, taskAnalysis, preplannedTask)
                 }
             }
             
@@ -347,15 +368,19 @@ class AgentEngine @Inject constructor(
     /**
      * 完整执行模式 - 支持屏幕操作
      */
-    private suspend fun executeFullMode(task: String, analysis: TaskAnalysis) {
+    private suspend fun executeFullMode(
+        task: String,
+        analysis: TaskAnalysis,
+        preplannedTask: DecomposedTask? = null
+    ) {
         Logger.i("Executing full mode for: $task", TAG)
         
         _state.value = AgentState.PLANNING
         callback?.onStateChanged(AgentState.PLANNING)
         
         // 任务分解（如果启用）
-        var decomposedTask: DecomposedTask? = null
-        if (enableTaskDecomposition) {
+        var decomposedTask: DecomposedTask? = preplannedTask
+        if (enableTaskDecomposition && decomposedTask == null) {
             decomposedTask = taskDecomposer.decompose(task)
             Logger.i("Task decomposed: ${decomposedTask.subTasks.size} sub-tasks, complexity: ${decomposedTask.complexity}", TAG)
             

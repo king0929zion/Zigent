@@ -240,11 +240,19 @@ class ActionDecider(
         )
         val targetApp = appKeywords.find { lowerTask.contains(it.lowercase()) }
         
+        val sensitiveKeywords = listOf(
+            "支付", "付款", "转账", "打款", "汇款",
+            "扫码支付", "收款码", "付款码", "红包", "提现",
+            "充值", "购买", "下单", "结算", "订单"
+        )
+        val requiresConfirmation = sensitiveKeywords.any { lowerTask.contains(it) }
+        
         TaskAnalysis(
             originalTask = task,
             needsExecution = !isSimpleChat,
             isSimpleChat = isSimpleChat,
-            targetApp = targetApp
+            targetApp = targetApp,
+            requiresUserConfirmation = requiresConfirmation
         )
     }
 

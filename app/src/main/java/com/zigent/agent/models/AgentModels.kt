@@ -218,6 +218,6 @@ data class TaskAnalysis(
     val needsExecution: Boolean,            // 是否需要执行手机操作
     val isSimpleChat: Boolean,              // 是否是简单对话
     val targetApp: String? = null,          // 目标应用名称
-    val estimatedSteps: Int = 0             // 预估步骤数
+    val estimatedSteps: Int = 0,            // 预估步骤数
+    val requiresUserConfirmation: Boolean = false // 是否需要用户确认才能执行
 )
-
