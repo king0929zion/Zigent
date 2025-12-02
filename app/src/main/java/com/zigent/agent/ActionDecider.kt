@@ -72,7 +72,8 @@ class ActionDecider(
         task: String,
         screenState: ScreenState,
         history: List<AgentStep>,
-        vlmDescription: String? = null  // VLM 提供的额外屏幕描述
+        vlmDescription: String? = null,  // VLM 提供的额外屏幕描述
+        planSteps: List<String>? = null  // 预先规划的步骤，用于减少遗忘
     ): AiDecision = withContext(Dispatchers.IO) {
         Logger.i("=== ActionDecider.decide ===", TAG)
         Logger.i("Task: $task", TAG)
@@ -80,7 +81,7 @@ class ActionDecider(
         Logger.i("Has VLM description: ${vlmDescription != null}", TAG)
         
         // 构建提示词
-        val prompt = buildPrompt(task, screenState, history, vlmDescription)
+        val prompt = buildPrompt(task, screenState, history, vlmDescription, planSteps)
         Logger.d("Prompt: ${prompt.take(1500)}...", TAG)
         
         // 调用 LLM 进行工具调用
@@ -265,7 +266,8 @@ class ActionDecider(
         task: String,
         screenState: ScreenState,
         history: List<AgentStep>,
-        vlmDescription: String?
+        vlmDescription: String?,
+        planSteps: List<String>?
     ): String {
         val sb = StringBuilder()
         
@@ -297,6 +299,15 @@ class ActionDecider(
             sb.appendLine("页面: ${it.substringAfterLast(".")}")
         }
         sb.appendLine()
+        
+        // 任务规划（若已有）
+        if (!planSteps.isNullOrEmpty()) {
+            sb.appendLine("## 任务规划（请按顺序执行，不要遗忘）")
+            planSteps.forEachIndexed { index, step ->
+                sb.appendLine("${index + 1}. $step")
+            }
+            sb.appendLine()
+        }
         
         // 屏幕元素列表（主要信息源）
         sb.appendLine("## 屏幕元素")

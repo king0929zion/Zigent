@@ -767,11 +767,12 @@ class AgentEngine @Inject constructor(
      */
     private suspend fun makeDecision(task: String, screenState: ScreenState): AiDecision {
         val decider = actionDecider ?: throw IllegalStateException("ActionDecider not initialized")
+        val planSteps = currentTask?.steps?.takeIf { it.isNotEmpty() }
         
         // 添加超时保护，防止 AI 调用卡死
         return try {
             withTimeoutOrNull(60_000L) {  // 60 秒超时
-                decider.decide(task, screenState, executionHistory)
+                decider.decide(task, screenState, executionHistory, planSteps = planSteps)
             } ?: run {
                 Logger.e("AI decision timeout after 60 seconds", TAG)
                 callback?.onProgress("AI 响应超时，正在重试...")
