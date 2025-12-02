@@ -127,6 +127,7 @@ class ActionExecutor @Inject constructor(
                 ActionType.PRESS_BACK -> executePressBack()
                 ActionType.PRESS_HOME -> executePressHome()
                 ActionType.PRESS_RECENT -> executePressRecent()
+                ActionType.PRESS_ENTER -> executePressEnter()
                 
                 // 应用操作
                 ActionType.OPEN_APP -> executeOpenApp(action)
@@ -138,6 +139,9 @@ class ActionExecutor @Inject constructor(
                 ActionType.TAKE_SCREENSHOT -> executeTakeScreenshot(action)
                 ActionType.COPY_TEXT -> executeCopyText(action)
                 ActionType.PASTE_TEXT -> executePasteText(action)
+                
+                // 视觉操作（由 AgentEngine 处理，这里只返回成功）
+                ActionType.DESCRIBE_SCREEN -> ExecutionResult(true, "请求 VLM 描述")
                 
                 // 通知操作
                 ActionType.OPEN_NOTIFICATION -> executeOpenNotification()
@@ -527,6 +531,32 @@ class ActionExecutor @Inject constructor(
         val success = adbManager.pressKey(AdbCommands.KeyCodes.RECENT_APPS)
         return if (success) ExecutionResult(true, "打开最近任务") 
                else ExecutionResult(false, errorMessage = "打开最近任务失败")
+    }
+
+    /**
+     * 按确认/回车键
+     */
+    private suspend fun executePressEnter(): ExecutionResult {
+        // 优先使用无障碍服务
+        ZigentAccessibilityService.instance?.let { service ->
+            // 尝试执行输入法确认动作
+            val node = service.rootInActiveWindow
+            val focusedNode = node?.findFocus(android.view.accessibility.AccessibilityNodeInfo.FOCUS_INPUT)
+            if (focusedNode != null) {
+                // 使用 ACTION_NEXT 或 IME_ACTION
+                val arguments = android.os.Bundle()
+                arguments.putInt(
+                    android.view.accessibility.AccessibilityNodeInfo.ACTION_ARGUMENT_MOVEMENT_GRANULARITY_INT,
+                    android.view.accessibility.AccessibilityNodeInfo.MOVEMENT_GRANULARITY_LINE
+                )
+                focusedNode.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_NEXT_AT_MOVEMENT_GRANULARITY, arguments)
+            }
+        }
+        
+        // 使用 ADB 发送回车键
+        val success = adbManager.pressKey(AdbCommands.KeyCodes.ENTER)
+        return if (success) ExecutionResult(true, "按下回车键") 
+               else ExecutionResult(false, errorMessage = "按回车键失败")
     }
 
     /**

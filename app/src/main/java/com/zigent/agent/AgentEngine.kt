@@ -328,6 +328,47 @@ class AgentEngine @Inject constructor(
                     callback?.onAskUser(decision.action.question ?: "需要您的确认")
                     return
                 }
+                ActionType.DESCRIBE_SCREEN -> {
+                    // 调用 VLM 获取屏幕描述，然后重新决策
+                    callback?.onProgress("正在分析屏幕...")
+                    val vlmDescription = actionDecider?.describeScreen(
+                        screenState.screenshotBase64,
+                        decision.action.text  // focus
+                    )
+                    
+                    if (vlmDescription != null) {
+                        Logger.i("VLM description obtained, re-deciding...", TAG)
+                        // 用 VLM 描述重新决策
+                        val newDecision = actionDecider?.decide(task, screenState, executionHistory, vlmDescription)
+                        if (newDecision != null && newDecision.action.type != ActionType.DESCRIBE_SCREEN) {
+                            // 执行新决策
+                            callback?.onProgress("执行: ${newDecision.action.description}")
+                            val result = actionExecutor.execute(newDecision.action)
+                            
+                            val step = AgentStep(
+                                stepNumber = stepCount,
+                                screenStateBefore = screenState.screenDescription,
+                                action = newDecision.action,
+                                screenStateAfter = null,
+                                success = result.success,
+                                errorMessage = result.errorMessage
+                            )
+                            executionHistory.add(step)
+                            
+                            if (result.success) {
+                                consecutiveErrors = 0
+                                callback?.onStepCompleted(stepCount, true, result.message)
+                            } else {
+                                consecutiveErrors++
+                                callback?.onStepCompleted(stepCount, false, result.errorMessage ?: "执行失败")
+                            }
+                        }
+                    } else {
+                        Logger.w("VLM description failed, continuing...", TAG)
+                    }
+                    delay(AiConfig.STEP_DELAY)
+                    continue
+                }
                 else -> { /* 继续执行 */ }
             }
             
@@ -418,15 +459,12 @@ class AgentEngine @Inject constructor(
 
     /**
      * AI决策
+     * 使用 LLM + 屏幕元素信息进行决策
+     * 当 AI 需要视觉信息时，会调用 describe_screen 工具
      */
     private suspend fun makeDecision(task: String, screenState: ScreenState): AiDecision {
         val decider = actionDecider ?: throw IllegalStateException("ActionDecider not initialized")
-        
-        return if (useVisionMode && !screenState.screenshotBase64.isNullOrEmpty()) {
-            decider.decideWithVision(task, screenState, executionHistory)
-        } else {
-            decider.decide(task, screenState, executionHistory)
-        }
+        return decider.decide(task, screenState, executionHistory)
     }
 
     /**

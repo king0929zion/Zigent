@@ -30,6 +30,7 @@ enum class ActionType {
     PRESS_BACK,     // 返回
     PRESS_HOME,     // 主页
     PRESS_RECENT,   // 最近任务
+    PRESS_ENTER,    // 确认/回车
     
     // 应用操作
     OPEN_APP,       // 打开应用（通过包名或名称）
@@ -41,6 +42,9 @@ enum class ActionType {
     TAKE_SCREENSHOT, // 截图
     COPY_TEXT,      // 复制文本
     PASTE_TEXT,     // 粘贴文本
+    
+    // 视觉操作
+    DESCRIBE_SCREEN, // 调用 VLM 描述屏幕
     
     // 通知操作
     OPEN_NOTIFICATION, // 打开通知栏

@@ -9,12 +9,13 @@ import kotlinx.coroutines.withContext
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
-import java.io.IOException
 import java.util.concurrent.TimeUnit
 
 /**
  * AI客户端
- * 支持OpenAI和Claude API
+ * 双模型架构：
+ * - 主 LLM (DeepSeek-V3.2-Exp): 任务理解 + Function Calling
+ * - 辅助 VLM (Qwen3-Omni-Captioner): 图片描述
  */
 class AiClient(private val settings: AiSettings) {
 
@@ -37,6 +38,96 @@ class AiClient(private val settings: AiSettings) {
         .build()
 
     /**
+     * 使用 VLM 描述图片内容
+     * 当 LLM 调用 describe_screen 工具时使用
+     */
+    suspend fun describeImage(
+        imageBase64: String,
+        context: String? = null
+    ): Result<String> = withContext(Dispatchers.IO) {
+        Logger.i("=== VLM Describe Image ===", TAG)
+        
+        val prompt = buildString {
+            append("请详细描述这个手机屏幕截图的内容。包括：\n")
+            append("1. 当前显示的应用或页面\n")
+            append("2. 屏幕上的主要元素（按钮、文字、图片等）\n")
+            append("3. 界面布局和结构\n")
+            append("4. 任何重要的视觉信息\n")
+            if (!context.isNullOrBlank()) {
+                append("\n用户当前任务: $context\n")
+                append("请特别关注与此任务相关的元素。")
+            }
+        }
+        
+        try {
+            val contentParts = listOf(
+                mapOf("type" to "text", "text" to prompt),
+                mapOf(
+                    "type" to "image_url",
+                    "image_url" to mapOf(
+                        "url" to "data:image/png;base64,$imageBase64",
+                        "detail" to "high"
+                    )
+                )
+            )
+            
+            val messages = listOf(
+                mapOf("role" to "user", "content" to contentParts)
+            )
+            
+            // 使用 VLM 模型
+            val visionModel = settings.visionModel.ifBlank { AiConfig.SILICONFLOW_VLM_MODEL }
+            Logger.i("Using VLM model: $visionModel", TAG)
+            
+            val requestBody = mapOf(
+                "model" to visionModel,
+                "messages" to messages,
+                "max_tokens" to 2048,
+                "temperature" to 0.3f  // 较低温度，更准确的描述
+            )
+            
+            val baseUrl = when (settings.provider) {
+                AiProvider.SILICONFLOW -> SILICONFLOW_BASE_URL
+                AiProvider.OPENAI -> OPENAI_BASE_URL
+                AiProvider.CUSTOM -> settings.baseUrl
+                else -> SILICONFLOW_BASE_URL
+            }.trimEnd('/')
+            
+            val httpRequest = Request.Builder()
+                .url("$baseUrl/chat/completions")
+                .addHeader("Authorization", "Bearer ${settings.apiKey}")
+                .addHeader("Content-Type", "application/json")
+                .post(gson.toJson(requestBody).toRequestBody("application/json".toMediaType()))
+                .build()
+            
+            val response = httpClient.newCall(httpRequest).execute()
+            val responseBody = response.body?.string() ?: ""
+            
+            Logger.d("VLM Response: ${responseBody.take(500)}", TAG)
+            
+            if (!response.isSuccessful) {
+                return@withContext Result.failure(Exception("VLM API error: ${response.code}"))
+            }
+            
+            val openAiResponse = gson.fromJson(responseBody, OpenAiResponse::class.java)
+            
+            if (openAiResponse.error != null) {
+                return@withContext Result.failure(Exception("VLM error: ${openAiResponse.error.message}"))
+            }
+            
+            val content = openAiResponse.choices?.firstOrNull()?.message?.content
+                ?: return@withContext Result.failure(Exception("VLM返回空内容"))
+            
+            Logger.i("VLM description length: ${content.length}", TAG)
+            Result.success(content)
+            
+        } catch (e: Exception) {
+            Logger.e("VLM describe image failed", e, TAG)
+            Result.failure(e)
+        }
+    }
+
+    /**
      * 发送聊天请求（纯文本）
      */
     suspend fun chat(
@@ -52,184 +143,115 @@ class AiClient(private val settings: AiSettings) {
     }
 
     /**
-     * 发送带工具的聊天请求（Function Calling）
+     * 使用 LLM 进行工具调用（Function Calling）
+     * 主要决策入口 - 不需要图片
      */
     suspend fun chatWithTools(
-        messages: List<ChatMessage>,
-        tools: List<Tool>,
-        systemPrompt: String? = null
-    ): Result<ToolCallResult> = withContext(Dispatchers.IO) {
-        when (settings.provider) {
-            AiProvider.SILICONFLOW -> chatOpenAiWithTools(messages, tools, systemPrompt, null, SILICONFLOW_BASE_URL)
-            AiProvider.OPENAI -> chatOpenAiWithTools(messages, tools, systemPrompt, null, OPENAI_BASE_URL)
-            AiProvider.CUSTOM -> chatOpenAiWithTools(messages, tools, systemPrompt, null, settings.baseUrl)
-            AiProvider.CLAUDE -> Result.failure(Exception("Claude不支持Function Calling，请使用硅基流动或OpenAI"))
-        }
-    }
-
-    /**
-     * 发送带图片和工具的聊天请求（多模态 + Function Calling）
-     */
-    suspend fun chatWithToolsAndImage(
         prompt: String,
-        imageBase64: String?,
         tools: List<Tool>,
         systemPrompt: String? = null
     ): Result<ToolCallResult> = withContext(Dispatchers.IO) {
-        when (settings.provider) {
-            AiProvider.SILICONFLOW -> {
-                val messages = listOf(ChatMessage(MessageRole.USER, prompt))
-                chatOpenAiWithTools(messages, tools, systemPrompt, imageBase64, SILICONFLOW_BASE_URL)
-            }
-            AiProvider.OPENAI -> {
-                val messages = listOf(ChatMessage(MessageRole.USER, prompt))
-                chatOpenAiWithTools(messages, tools, systemPrompt, imageBase64, OPENAI_BASE_URL)
-            }
-            AiProvider.CUSTOM -> {
-                val messages = listOf(ChatMessage(MessageRole.USER, prompt))
-                chatOpenAiWithTools(messages, tools, systemPrompt, imageBase64, settings.baseUrl)
-            }
-            AiProvider.CLAUDE -> Result.failure(Exception("Claude不支持Function Calling"))
-        }
-    }
-
-    /**
-     * OpenAI兼容格式 带工具的聊天请求（支持多模态）
-     */
-    private fun chatOpenAiWithTools(
-        messages: List<ChatMessage>,
-        tools: List<Tool>,
-        systemPrompt: String?,
-        imageBase64: String?,
-        baseUrl: String = OPENAI_BASE_URL
-    ): Result<ToolCallResult> {
+        Logger.i("=== LLM Tool Call ===", TAG)
+        
         try {
-            val allMessages = buildList<Any> {
+            val messages = buildList<Any> {
                 if (!systemPrompt.isNullOrBlank()) {
                     add(mapOf("role" to "system", "content" to systemPrompt))
                 }
-                
-                messages.forEach { msg ->
-                    if (imageBase64 != null && msg.role == MessageRole.USER) {
-                        // 多模态消息（带图片）
-                        val contentParts = listOf(
-                            mapOf("type" to "text", "text" to msg.content),
-                            mapOf(
-                                "type" to "image_url",
-                                "image_url" to mapOf(
-                                    "url" to "data:image/png;base64,$imageBase64",
-                                    "detail" to "high"
-                                )
-                            )
-                        )
-                        add(mapOf("role" to "user", "content" to contentParts))
-                    } else {
-                        add(mapOf(
-                            "role" to msg.role.name.lowercase(),
-                            "content" to msg.content
-                        ))
-                    }
-                }
+                add(mapOf("role" to "user", "content" to prompt))
             }
-
-            val defaultModel = when (settings.provider) {
-                AiProvider.SILICONFLOW -> AiConfig.SILICONFLOW_MODEL
-                else -> AiConfig.DEFAULT_MODEL_OPENAI
-            }
-
+            
+            // 使用 LLM 模型（支持 Function Calling）
+            val llmModel = settings.model.ifBlank { AiConfig.SILICONFLOW_LLM_MODEL }
+            Logger.i("Using LLM model: $llmModel", TAG)
+            Logger.i("Tools count: ${tools.size}", TAG)
+            
             val request = ToolRequest(
-                model = settings.model.ifBlank { defaultModel },
-                messages = allMessages,
+                model = llmModel,
+                messages = messages,
                 tools = tools,
-                toolChoice = "auto",  // AI自主选择：调用工具或文字交流
+                toolChoice = "auto",
                 maxTokens = settings.maxTokens,
                 temperature = settings.temperature
             )
-
-            val actualBaseUrl = baseUrl.trimEnd('/')
-
+            
+            val baseUrl = when (settings.provider) {
+                AiProvider.SILICONFLOW -> SILICONFLOW_BASE_URL
+                AiProvider.OPENAI -> OPENAI_BASE_URL
+                AiProvider.CUSTOM -> settings.baseUrl
+                else -> SILICONFLOW_BASE_URL
+            }.trimEnd('/')
+            
             val httpRequest = Request.Builder()
-                .url("$actualBaseUrl/chat/completions")
+                .url("$baseUrl/chat/completions")
                 .addHeader("Authorization", "Bearer ${settings.apiKey}")
                 .addHeader("Content-Type", "application/json")
                 .post(gson.toJson(request).toRequestBody("application/json".toMediaType()))
                 .build()
-
+            
             val requestJson = gson.toJson(request)
-            Logger.i("=== Tool Request ===", TAG)
-            Logger.d("Request JSON: ${requestJson.take(2000)}", TAG)
-
+            Logger.d("Request: ${requestJson.take(2000)}", TAG)
+            
             val response = httpClient.newCall(httpRequest).execute()
             val responseBody = response.body?.string() ?: ""
-
-            Logger.i("=== Tool Response ===", TAG)
+            
             Logger.i("Response code: ${response.code}", TAG)
-            Logger.d("Response body: ${responseBody.take(2000)}", TAG)
-
+            Logger.d("Response: ${responseBody.take(2000)}", TAG)
+            
             if (!response.isSuccessful) {
-                return Result.failure(Exception("API error: ${response.code} - $responseBody"))
+                return@withContext Result.failure(Exception("LLM API error: ${response.code} - $responseBody"))
             }
-
-            // 检查响应是否为空
+            
             if (responseBody.isBlank()) {
-                Logger.e("API returned empty response body", TAG)
-                return Result.failure(Exception("API响应为空"))
+                return@withContext Result.failure(Exception("LLM返回空响应"))
             }
-
+            
             val toolResponse = try {
                 gson.fromJson(responseBody, ToolResponse::class.java)
             } catch (e: Exception) {
-                Logger.e("Failed to parse API response: ${responseBody.take(500)}", e, TAG)
-                return Result.failure(Exception("无法解析API响应: ${e.message}"))
+                Logger.e("Failed to parse response", e, TAG)
+                return@withContext Result.failure(Exception("无法解析响应: ${e.message}"))
             }
             
-            if (toolResponse == null) {
-                Logger.e("Parsed response is null", TAG)
-                return Result.failure(Exception("API响应解析为空"))
+            if (toolResponse?.error != null) {
+                return@withContext Result.failure(Exception("API错误: ${toolResponse.error.message}"))
             }
             
-            if (toolResponse.error != null) {
-                val errorMsg = toolResponse.error.message ?: "未知错误"
-                Logger.e("API error: $errorMsg", TAG)
-                return Result.failure(Exception("API错误: $errorMsg"))
-            }
-
-            val choice = toolResponse.choices?.firstOrNull()
+            val choice = toolResponse?.choices?.firstOrNull()
             if (choice == null) {
                 Logger.w("No choices in response", TAG)
-                // 返回空结果而不是失败，让调用方决定如何处理
-                return Result.success(ToolCallResult.empty())
+                return@withContext Result.success(ToolCallResult.empty())
             }
             
             val reasoning = choice.message?.reasoningContent
             
-            // 检查是否有工具调用
+            // 检查工具调用
             val toolCalls = choice.message?.toolCalls
             if (!toolCalls.isNullOrEmpty()) {
                 val toolCall = toolCalls.first()
-                Logger.i("Tool call: ${toolCall.function.name}(${toolCall.function.arguments})", TAG)
-                return Result.success(ToolCallResult.fromToolCall(toolCall, reasoning))
+                Logger.i("✅ Tool call: ${toolCall.function.name}", TAG)
+                Logger.d("Arguments: ${toolCall.function.arguments}", TAG)
+                return@withContext Result.success(ToolCallResult.fromToolCall(toolCall, reasoning))
             }
             
-            // 没有工具调用，检查普通回复
+            // 纯文本响应
             val content = choice.message?.content
             if (!content.isNullOrBlank()) {
-                Logger.d("Text response (no tool call): ${content.take(200)}", TAG)
-                return Result.success(ToolCallResult.fromText(content, reasoning))
+                Logger.i("📝 Text response (no tool)", TAG)
+                return@withContext Result.success(ToolCallResult.fromText(content, reasoning))
             }
             
-            // 完全空响应
-            Logger.w("Empty response: no tool_calls and no content", TAG)
-            return Result.success(ToolCallResult.empty())
-
+            Logger.w("Empty response from LLM", TAG)
+            Result.success(ToolCallResult.empty())
+            
         } catch (e: Exception) {
-            Logger.e("Tool API call failed", e, TAG)
-            return Result.failure(e)
+            Logger.e("LLM tool call failed", e, TAG)
+            Result.failure(e)
         }
     }
 
     /**
-     * 发送带图片的聊天请求（多模态）
+     * 发送带图片的聊天请求（多模态，用于兼容）
      */
     suspend fun chatWithImage(
         prompt: String,
@@ -245,7 +267,7 @@ class AiClient(private val settings: AiSettings) {
     }
 
     /**
-     * OpenAI兼容格式 聊天请求（支持硅基流动等）
+     * OpenAI兼容格式 聊天请求
      */
     private fun chatOpenAi(
         messages: List<ChatMessage>,
@@ -260,13 +282,10 @@ class AiClient(private val settings: AiSettings) {
                 addAll(messages)
             }
 
-            val defaultModel = when (settings.provider) {
-                AiProvider.SILICONFLOW -> AiConfig.SILICONFLOW_MODEL
-                else -> AiConfig.DEFAULT_MODEL_OPENAI
-            }
+            val llmModel = settings.model.ifBlank { AiConfig.SILICONFLOW_LLM_MODEL }
 
             val request = OpenAiRequest(
-                model = settings.model.ifBlank { defaultModel },
+                model = llmModel,
                 messages = allMessages,
                 maxTokens = settings.maxTokens,
                 temperature = settings.temperature
@@ -308,7 +327,7 @@ class AiClient(private val settings: AiSettings) {
     }
 
     /**
-     * OpenAI兼容格式 多模态请求（带图片，支持硅基流动等）
+     * OpenAI兼容格式 多模态请求（带图片）
      */
     private fun chatOpenAiWithImage(
         prompt: String,
@@ -335,13 +354,11 @@ class AiClient(private val settings: AiSettings) {
                 add(mapOf("role" to "user", "content" to contentParts))
             }
 
-            val defaultModel = when (settings.provider) {
-                AiProvider.SILICONFLOW -> AiConfig.SILICONFLOW_MODEL
-                else -> AiConfig.DEFAULT_MODEL_OPENAI
-            }
+            // 使用 VLM 模型处理图片
+            val visionModel = settings.visionModel.ifBlank { AiConfig.SILICONFLOW_VLM_MODEL }
 
             val requestBody = mapOf(
-                "model" to (settings.model.ifBlank { defaultModel }),
+                "model" to visionModel,
                 "messages" to messages,
                 "max_tokens" to settings.maxTokens,
                 "temperature" to settings.temperature

@@ -30,6 +30,7 @@ class SettingsRepository @Inject constructor(
         private val AI_API_KEY = stringPreferencesKey("ai_api_key")
         private val AI_BASE_URL = stringPreferencesKey("ai_base_url")
         private val AI_MODEL = stringPreferencesKey("ai_model")
+        private val AI_VISION_MODEL = stringPreferencesKey("ai_vision_model")  // VLM 模型
         private val AI_MAX_TOKENS = intPreferencesKey("ai_max_tokens")
         private val AI_TEMPERATURE = floatPreferencesKey("ai_temperature")
         
@@ -48,13 +49,14 @@ class SettingsRepository @Inject constructor(
     val aiSettingsFlow: Flow<AiSettings> = context.dataStore.data.map { prefs ->
         AiSettings(
             provider = try {
-                AiProvider.valueOf(prefs[AI_PROVIDER] ?: AiProvider.OPENAI.name)
+                AiProvider.valueOf(prefs[AI_PROVIDER] ?: AiProvider.SILICONFLOW.name)
             } catch (e: Exception) {
-                AiProvider.OPENAI
+                AiProvider.SILICONFLOW
             },
             apiKey = prefs[AI_API_KEY] ?: "",
-            baseUrl = prefs[AI_BASE_URL] ?: "",
-            model = prefs[AI_MODEL] ?: "",
+            baseUrl = prefs[AI_BASE_URL] ?: AiConfig.SILICONFLOW_BASE_URL,
+            model = prefs[AI_MODEL] ?: AiConfig.SILICONFLOW_LLM_MODEL,
+            visionModel = prefs[AI_VISION_MODEL] ?: AiConfig.SILICONFLOW_VLM_MODEL,
             maxTokens = prefs[AI_MAX_TOKENS] ?: AiConfig.MAX_TOKENS,
             temperature = prefs[AI_TEMPERATURE] ?: AiConfig.TEMPERATURE
         )
@@ -69,6 +71,7 @@ class SettingsRepository @Inject constructor(
             prefs[AI_API_KEY] = settings.apiKey
             prefs[AI_BASE_URL] = settings.baseUrl
             prefs[AI_MODEL] = settings.model
+            prefs[AI_VISION_MODEL] = settings.visionModel
             prefs[AI_MAX_TOKENS] = settings.maxTokens
             prefs[AI_TEMPERATURE] = settings.temperature
         }

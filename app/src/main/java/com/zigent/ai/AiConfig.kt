@@ -14,9 +14,17 @@ object AiConfig {
     const val DEFAULT_MODEL_OPENAI = "gpt-4o"
     const val DEFAULT_MODEL_CLAUDE = "claude-3-5-sonnet-20241022"
     
-    // 硅基流动配置（默认推荐）
+    // 硅基流动配置
     const val SILICONFLOW_BASE_URL = "https://api.siliconflow.cn/v1"
-    const val SILICONFLOW_MODEL = "Qwen/Qwen3-VL-235B-A22B-Instruct"
+    
+    // 主 LLM 模型（支持 Function Calling）
+    const val SILICONFLOW_LLM_MODEL = "deepseek-ai/DeepSeek-V3.2-Exp"
+    
+    // 辅助 VLM 模型（用于图片描述）
+    const val SILICONFLOW_VLM_MODEL = "Qwen/Qwen3-Omni-30B-A3B-Captioner"
+    
+    // 兼容旧配置
+    const val SILICONFLOW_MODEL = SILICONFLOW_LLM_MODEL
     
     // 最大Token数
     const val MAX_TOKENS = 4096
@@ -51,7 +59,8 @@ data class AiSettings(
     val provider: AiProvider = AiProvider.SILICONFLOW,
     val apiKey: String = "",
     val baseUrl: String = AiConfig.SILICONFLOW_BASE_URL,
-    val model: String = AiConfig.SILICONFLOW_MODEL,
+    val model: String = AiConfig.SILICONFLOW_LLM_MODEL,  // 主 LLM 模型
+    val visionModel: String = AiConfig.SILICONFLOW_VLM_MODEL,  // 辅助 VLM 模型
     val maxTokens: Int = AiConfig.MAX_TOKENS,
     val temperature: Float = AiConfig.TEMPERATURE
 )

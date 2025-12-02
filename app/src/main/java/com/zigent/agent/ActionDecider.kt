@@ -6,8 +6,6 @@ import com.google.gson.JsonParser
 import com.zigent.agent.models.*
 import com.zigent.ai.AiClient
 import com.zigent.ai.AiSettings
-import com.zigent.ai.models.ChatMessage
-import com.zigent.ai.models.MessageRole
 import com.zigent.ai.models.ToolCall
 import com.zigent.ai.models.ToolCallResult
 import com.zigent.utils.Logger
@@ -16,8 +14,17 @@ import kotlinx.coroutines.withContext
 
 /**
  * 操作决策器
- * 调用AI分析屏幕状态并决定下一步操作
- * 支持 Function Calling（工具调用）模式
+ * 
+ * 双模型架构：
+ * - 主 LLM (DeepSeek-V3.2-Exp): 任务理解 + Function Calling
+ * - 辅助 VLM (Qwen3-Omni-Captioner): 图片描述（当调用 describe_screen 时）
+ * 
+ * 工作流程：
+ * 1. 收集屏幕元素信息（无障碍服务）
+ * 2. 构建提示词发送给 LLM
+ * 3. LLM 返回工具调用
+ * 4. 如果是 describe_screen，调用 VLM 获取图片描述，再让 LLM 继续决策
+ * 5. 返回最终决策
  */
 class ActionDecider(
     private val aiSettings: AiSettings
@@ -29,248 +36,49 @@ class ActionDecider(
     private val aiClient = AiClient(aiSettings)
     private val gson = Gson()
     
-    // 是否使用 Function Calling 模式
-    var useFunctionCalling: Boolean = true
-    
-    // Function Calling 连续失败计数
-    private var fcFailCount = 0
-    private val MAX_FC_FAILS = 2
+    // VLM 图片描述缓存（避免重复调用）
+    private var lastScreenDescription: String? = null
+    private var lastScreenDescriptionTime: Long = 0
+    private val DESCRIPTION_CACHE_TIMEOUT = 5000L  // 5秒缓存
 
     /**
-     * 决定下一步操作（带图片，使用多模态AI）
-     */
-    suspend fun decideWithVision(
-        task: String,
-        screenState: ScreenState,
-        history: List<AgentStep>
-    ): AiDecision = withContext(Dispatchers.IO) {
-        
-        // 优先使用 Function Calling 模式
-        if (useFunctionCalling) {
-            return@withContext decideWithFunctionCalling(task, screenState, history)
-        }
-        
-        val prompt = PromptBuilder.buildVisionActionPrompt(task, screenState, history)
-        
-        Logger.d("Vision prompt: ${prompt.take(500)}...", TAG)
-        
-        val imageBase64 = screenState.screenshotBase64
-        
-        val result = if (!imageBase64.isNullOrEmpty()) {
-            aiClient.chatWithImage(
-                prompt = prompt,
-                imageBase64 = imageBase64,
-                systemPrompt = PromptBuilder.SYSTEM_PROMPT
-            )
-        } else {
-            // 没有截图，使用纯文本模式
-            decide(task, screenState, history)
-            return@withContext decide(task, screenState, history)
-        }
-        
-        result.fold(
-            onSuccess = { response ->
-                parseAiResponse(response)
-            },
-            onFailure = { error ->
-                Logger.e("AI decision failed", error, TAG)
-                AiDecision(
-                    thought = "AI调用失败: ${error.message}",
-                    action = AgentAction(
-                        type = ActionType.FAILED,
-                        description = "AI服务异常",
-                        resultMessage = error.message
-                    )
-                )
-            }
-        )
-    }
-
-    /**
-     * 决定下一步操作（纯文本模式）
+     * 主决策入口
+     * 使用 LLM + 屏幕元素信息进行决策
      */
     suspend fun decide(
         task: String,
         screenState: ScreenState,
-        history: List<AgentStep>
+        history: List<AgentStep>,
+        vlmDescription: String? = null  // VLM 提供的额外屏幕描述
     ): AiDecision = withContext(Dispatchers.IO) {
+        Logger.i("=== ActionDecider.decide ===", TAG)
+        Logger.i("Task: $task", TAG)
+        Logger.i("UI elements count: ${screenState.uiElements.size}", TAG)
+        Logger.i("Has VLM description: ${vlmDescription != null}", TAG)
         
-        // 优先使用 Function Calling 模式
-        if (useFunctionCalling) {
-            return@withContext decideWithFunctionCalling(task, screenState, history)
-        }
+        // 构建提示词
+        val prompt = buildPrompt(task, screenState, history, vlmDescription)
+        Logger.d("Prompt: ${prompt.take(1500)}...", TAG)
         
-        val prompt = PromptBuilder.buildActionPrompt(task, screenState, history)
-        
-        Logger.d("Text prompt: ${prompt.take(500)}...", TAG)
-        
-        val messages = listOf(
-            ChatMessage(MessageRole.USER, prompt)
-        )
-        
-        val result = aiClient.chat(messages, PromptBuilder.SYSTEM_PROMPT)
-        
-        result.fold(
-            onSuccess = { response ->
-                parseAiResponse(response)
-            },
-            onFailure = { error ->
-                Logger.e("AI decision failed", error, TAG)
-                AiDecision(
-                    thought = "AI调用失败: ${error.message}",
-                    action = AgentAction(
-                        type = ActionType.FAILED,
-                        description = "AI服务异常",
-                        resultMessage = error.message
-                    )
-                )
-            }
-        )
-    }
-
-    /**
-     * 使用 Function Calling 决定下一步操作（支持多模态）
-     */
-    suspend fun decideWithFunctionCalling(
-        task: String,
-        screenState: ScreenState,
-        history: List<AgentStep>
-    ): AiDecision = withContext(Dispatchers.IO) {
-        
-        val prompt = buildFunctionCallingPrompt(task, screenState, history)
-        val imageBase64 = screenState.screenshotBase64
-        
-        Logger.d("Function calling prompt: ${prompt.take(500)}...", TAG)
-        Logger.d("Has screenshot: ${!imageBase64.isNullOrEmpty()}", TAG)
-        
-        // 使用带图片的 Function Calling（如果有截图）
-        val result = aiClient.chatWithToolsAndImage(
+        // 调用 LLM 进行工具调用
+        val result = aiClient.chatWithTools(
             prompt = prompt,
-            imageBase64 = imageBase64,
             tools = AgentTools.ALL_TOOLS,
             systemPrompt = AgentTools.SYSTEM_PROMPT
         )
         
         result.fold(
-            onSuccess = { callResult ->
-                val decision = parseToolCallResult(callResult, task, screenState, history)
-                // 如果解析成功，重置失败计数
-                if (decision.action.type != ActionType.FAILED) {
-                    fcFailCount = 0
-                }
-                decision
+            onSuccess = { toolResult ->
+                parseToolCallResult(toolResult, task, screenState, history)
             },
             onFailure = { error ->
-                Logger.e("Function calling failed", error, TAG)
-                handleFunctionCallingFailure(task, screenState, history)
-            }
-        )
-    }
-
-    /**
-     * 处理 Function Calling 失败
-     */
-    private suspend fun handleFunctionCallingFailure(
-        task: String,
-        screenState: ScreenState,
-        history: List<AgentStep>
-    ): AiDecision {
-        fcFailCount++
-        Logger.w("Function calling fail count: $fcFailCount", TAG)
-        
-        if (fcFailCount >= MAX_FC_FAILS) {
-            Logger.w("Too many FC failures, switching to text mode", TAG)
-            useFunctionCalling = false
-            fcFailCount = 0
-        }
-        
-        // 降级到普通模式
-        return decide(task, screenState, history)
-    }
-
-    /**
-     * 解析工具调用结果
-     */
-    private suspend fun parseToolCallResult(
-        result: ToolCallResult,
-        task: String,
-        screenState: ScreenState,
-        history: List<AgentStep>
-    ): AiDecision {
-        Logger.i("=== Parsing Tool Call Result ===", TAG)
-        Logger.i("hasToolCall: ${result.hasToolCall}, hasTextResponse: ${result.hasTextResponse}", TAG)
-        
-        // 优先处理工具调用
-        if (result.hasToolCall && result.toolCall != null) {
-            Logger.i("Processing tool call: ${result.toolCall.function.name}", TAG)
-            Logger.d("Tool arguments: ${result.toolCall.function.arguments}", TAG)
-            return parseToolCall(result.toolCall, result.reasoning)
-        }
-        
-        // 处理纯文本响应
-        if (result.hasTextResponse && !result.textResponse.isNullOrBlank()) {
-            Logger.i("Processing text response (no tool call)", TAG)
-            Logger.d("Text: ${result.textResponse?.take(200)}", TAG)
-            return parseTextResponse(result.textResponse!!, result.reasoning)
-        }
-        
-        // 空响应 - 记录并尝试普通模式
-        Logger.w("Empty response from Function Calling!", TAG)
-        Logger.w("ToolCall: ${result.toolCall}", TAG)
-        Logger.w("TextResponse: ${result.textResponse}", TAG)
-        Logger.w("Reasoning: ${result.reasoning}", TAG)
-        
-        fcFailCount++
-        Logger.i("FC fail count: $fcFailCount / $MAX_FC_FAILS", TAG)
-        
-        if (fcFailCount >= MAX_FC_FAILS) {
-            Logger.i("Switching to text mode due to repeated failures", TAG)
-            useFunctionCalling = false
-            fcFailCount = 0
-        }
-        
-        // 降级到普通模式重试
-        Logger.i("Retrying with text mode...", TAG)
-        return decideWithTextMode(task, screenState, history)
-    }
-    
-    /**
-     * 使用普通文本模式决策（不使用 Function Calling）
-     */
-    private suspend fun decideWithTextMode(
-        task: String,
-        screenState: ScreenState,
-        history: List<AgentStep>
-    ): AiDecision {
-        val prompt = PromptBuilder.buildVisionActionPrompt(task, screenState, history)
-        val imageBase64 = screenState.screenshotBase64
-        
-        Logger.i("=== Text Mode Decision ===", TAG)
-        
-        val result = if (!imageBase64.isNullOrEmpty()) {
-            aiClient.chatWithImage(
-                prompt = prompt,
-                imageBase64 = imageBase64,
-                systemPrompt = PromptBuilder.SYSTEM_PROMPT
-            )
-        } else {
-            val messages = listOf(ChatMessage(MessageRole.USER, prompt))
-            aiClient.chat(messages, PromptBuilder.SYSTEM_PROMPT)
-        }
-        
-        return result.fold(
-            onSuccess = { response ->
-                Logger.i("Text mode response: ${response.take(200)}", TAG)
-                parseAiResponse(response)
-            },
-            onFailure = { error ->
-                Logger.e("Text mode failed", error, TAG)
+                Logger.e("LLM decision failed", error, TAG)
                 AiDecision(
                     thought = "AI调用失败: ${error.message}",
                     action = AgentAction(
-                        type = ActionType.ASK_USER,
-                        description = "需要帮助",
-                        question = "抱歉，我遇到了一些问题。请问您想让我做什么？"
+                        type = ActionType.FAILED,
+                        description = "AI服务异常",
+                        resultMessage = error.message
                     )
                 )
             }
@@ -278,240 +86,243 @@ class ActionDecider(
     }
 
     /**
-     * 解析文本响应（AI选择用文字而非工具响应）
-     * 这通常意味着 AI 想要与用户交流
+     * 兼容旧接口 - 带图片决策
      */
-    private fun parseTextResponse(text: String, reasoning: String?): AiDecision {
-        val thought = reasoning ?: text.take(100)
-        Logger.d("Parsing text response: ${text.take(300)}", TAG)
-        
-        // 首先尝试解析为 JSON（兼容旧模式）
-        val jsonDecision = try {
-            parseAiResponse(text)
-        } catch (e: Exception) {
-            null
+    suspend fun decideWithVision(
+        task: String,
+        screenState: ScreenState,
+        history: List<AgentStep>
+    ): AiDecision = decide(task, screenState, history)
+
+    /**
+     * 调用 VLM 获取屏幕描述
+     */
+    suspend fun describeScreen(
+        imageBase64: String?,
+        context: String? = null
+    ): String? = withContext(Dispatchers.IO) {
+        if (imageBase64.isNullOrEmpty()) {
+            Logger.w("No screenshot available for VLM", TAG)
+            return@withContext null
         }
         
-        // 如果 JSON 解析成功且不是 FAILED，使用它
-        if (jsonDecision != null && jsonDecision.action.type != ActionType.FAILED) {
-            Logger.i("Parsed as JSON action: ${jsonDecision.action.type}", TAG)
-            return jsonDecision
+        // 检查缓存
+        val now = System.currentTimeMillis()
+        if (lastScreenDescription != null && (now - lastScreenDescriptionTime) < DESCRIPTION_CACHE_TIMEOUT) {
+            Logger.i("Using cached VLM description", TAG)
+            return@withContext lastScreenDescription
         }
         
-        val textLower = text.lowercase()
+        Logger.i("=== Calling VLM for screen description ===", TAG)
         
-        // 检查是否是询问/确认（AI 想跟用户交流）
-        val isQuestion = text.contains("？") || text.contains("?")
-        val hasQuestionWords = textLower.contains("请问") || textLower.contains("需要") || 
-                               textLower.contains("你想") || textLower.contains("确认") ||
-                               textLower.contains("请告诉") || textLower.contains("请提供") ||
-                               textLower.contains("是否") || textLower.contains("哪个") ||
-                               textLower.contains("什么") || textLower.contains("谁")
+        val result = aiClient.describeImage(imageBase64, context)
         
-        if (isQuestion || hasQuestionWords) {
-            Logger.i("AI wants to ask user: ${text.take(100)}", TAG)
-            return AiDecision(
-                thought = thought,
-                action = AgentAction(
-                    type = ActionType.ASK_USER,
-                    description = "AI需要确认",
-                    question = text.take(300)
-                )
-            )
-        }
-        
-        // 检查是否明确表示任务完成
-        if ((textLower.contains("已完成") || textLower.contains("成功") || 
-             textLower.contains("完成了") || textLower.contains("搞定")) &&
-            !textLower.contains("需要") && !textLower.contains("下一步") && !textLower.contains("请")) {
-            return AiDecision(
-                thought = thought,
-                action = AgentAction(
-                    type = ActionType.FINISHED,
-                    description = "任务完成",
-                    resultMessage = text.take(200)
-                )
-            )
-        }
-        
-        // 检查是否明确表示失败
-        if (textLower.contains("无法") || textLower.contains("失败") || 
-            textLower.contains("抱歉") || textLower.contains("不能")) {
-            return AiDecision(
-                thought = thought,
-                action = AgentAction(
-                    type = ActionType.FAILED,
-                    description = "任务失败",
-                    resultMessage = text.take(200)
-                )
-            )
-        }
-        
-        // 默认：AI 用文字回复了，可能是想告诉用户一些信息
-        // 将其视为 ASK_USER，让用户看到并响应
-        Logger.i("AI text response, treating as message to user: ${text.take(100)}", TAG)
-        return AiDecision(
-            thought = thought,
-            action = AgentAction(
-                type = ActionType.ASK_USER,
-                description = "AI消息",
-                question = text.take(300)
-            )
+        result.fold(
+            onSuccess = { description ->
+                lastScreenDescription = description
+                lastScreenDescriptionTime = now
+                Logger.i("VLM description obtained: ${description.take(200)}...", TAG)
+                description
+            },
+            onFailure = { error ->
+                Logger.e("VLM description failed", error, TAG)
+                null
+            }
         )
     }
 
     /**
-     * 构建 Function Calling 的提示词
+     * 简单对话模式
+     * 不需要操作手机时使用
      */
-    private fun buildFunctionCallingPrompt(
+    suspend fun simpleChat(task: String): String = withContext(Dispatchers.IO) {
+        Logger.i("Simple chat: $task", TAG)
+        
+        val messages = listOf(
+            com.zigent.ai.models.ChatMessage(
+                com.zigent.ai.models.MessageRole.USER,
+                task
+            )
+        )
+        
+        val result = aiClient.chat(
+            messages = messages,
+            systemPrompt = "你是Zigent，一个友好的AI助手。请简洁地回答用户的问题。"
+        )
+        
+        result.fold(
+            onSuccess = { it },
+            onFailure = { "抱歉，我暂时无法回答这个问题。" }
+        )
+    }
+
+    /**
+     * 分析任务类型
+     */
+    suspend fun analyzeTask(task: String): TaskAnalysis = withContext(Dispatchers.IO) {
+        Logger.d("Analyzing task: $task", TAG)
+        
+        // 简单规则判断
+        val lowerTask = task.lowercase()
+        
+        // 检查是否是简单对话
+        val isSimpleChat = lowerTask.length < 20 && (
+            lowerTask.contains("你好") ||
+            lowerTask.contains("谢谢") ||
+            lowerTask.contains("再见") ||
+            lowerTask.startsWith("?") ||
+            lowerTask.startsWith("？") ||
+            lowerTask.contains("什么是") ||
+            lowerTask.contains("介绍一下")
+        )
+        
+        // 检查目标应用
+        val targetApp = APP_KEYWORDS.entries.find { (keyword, _) ->
+            lowerTask.contains(keyword)
+        }?.value
+        
+        TaskAnalysis(
+            originalTask = task,
+            needsExecution = !isSimpleChat,
+            isSimpleChat = isSimpleChat,
+            targetApp = targetApp
+        )
+    }
+
+    // ==================== 私有方法 ====================
+
+    /**
+     * 构建提示词
+     */
+    private fun buildPrompt(
         task: String,
         screenState: ScreenState,
-        history: List<AgentStep>
+        history: List<AgentStep>,
+        vlmDescription: String?
     ): String {
         val sb = StringBuilder()
         
         // 任务描述
-        sb.appendLine("【用户任务】")
+        sb.appendLine("## 用户任务")
         sb.appendLine(task)
         sb.appendLine()
         
-        // 当前应用状态
-        sb.appendLine("【当前应用】")
-        val appName = getAppName(screenState.packageName)
-        sb.appendLine("$appName (${screenState.packageName})")
+        // 当前应用
+        sb.appendLine("## 当前状态")
+        sb.appendLine("应用: ${getAppName(screenState.packageName)}")
         screenState.activityName?.let { 
-            sb.appendLine("页面：${it.substringAfterLast(".")}")
+            sb.appendLine("页面: ${it.substringAfterLast(".")}")
         }
         sb.appendLine()
         
-        // 屏幕元素列表（更清晰的格式）
+        // 屏幕元素列表（主要信息源）
+        sb.appendLine("## 屏幕元素")
         if (screenState.uiElements.isNotEmpty()) {
-            sb.appendLine("【屏幕元素】可交互元素及其坐标：")
-            
-            var clickableCount = 0
-            var editableCount = 0
-            
-            screenState.uiElements.forEach { elem ->
-                val content = elem.text.ifEmpty { elem.description }.take(30)
-                if (content.isNotEmpty() || elem.isClickable || elem.isEditable) {
+            screenState.uiElements.take(30).forEach { elem ->
+                val content = elem.text.ifEmpty { elem.description }.take(40)
+                if (content.isNotEmpty() || elem.isClickable || elem.isEditable || elem.isScrollable) {
                     val icon = when {
-                        elem.isEditable -> {
-                            editableCount++
-                            "📝"
-                        }
+                        elem.isEditable -> "📝"
+                        elem.isClickable -> "🔘"
                         elem.isScrollable -> "📜"
-                        elem.isClickable -> {
-                            clickableCount++
-                            "🔘"
-                        }
                         else -> "📄"
                     }
-                    sb.appendLine("$icon \"$content\" → 坐标(${elem.bounds.centerX}, ${elem.bounds.centerY})")
-                    if (clickableCount + editableCount >= 15) return@forEach
+                    val coords = "(${elem.bounds.centerX}, ${elem.bounds.centerY})"
+                    sb.appendLine("$icon \"$content\" $coords")
                 }
             }
             sb.appendLine()
-            sb.appendLine("图例：🔘可点击 📝可输入 📜可滚动 📄文本")
-            sb.appendLine()
+            sb.appendLine("图例: 🔘可点击 📝可输入 📜可滚动 📄文本")
         } else {
-            sb.appendLine("【屏幕元素】未检测到可交互元素")
+            sb.appendLine("（未检测到可交互元素）")
+        }
+        sb.appendLine()
+        
+        // VLM 图片描述（如果有）
+        if (!vlmDescription.isNullOrBlank()) {
+            sb.appendLine("## 屏幕视觉描述 (VLM)")
+            sb.appendLine(vlmDescription.take(500))
             sb.appendLine()
         }
         
         // 历史操作
         if (history.isNotEmpty()) {
-            sb.appendLine("【已执行步骤】")
+            sb.appendLine("## 已执行步骤")
             history.takeLast(5).forEachIndexed { index, step ->
-                val status = if (step.success) "✅" else "❌"
+                val status = if (step.success) "✓" else "✗"
                 sb.appendLine("${index + 1}. $status ${step.action.description}")
             }
             sb.appendLine()
         }
         
-        // 明确指示 - 强调必须调用工具
-        sb.appendLine("【请求】")
-        sb.appendLine("根据以上信息，调用一个合适的工具执行下一步操作。")
-        sb.appendLine()
-        sb.appendLine("提示：")
-        if (screenState.uiElements.isEmpty()) {
-            sb.appendLine("- 屏幕上没有检测到元素，可能需要 wait 等待加载或 swipe_down 滚动")
-        }
-        if (history.isEmpty()) {
-            sb.appendLine("- 这是第一步，请从打开应用或点击目标元素开始")
-        } else {
-            val lastStep = history.last()
-            if (!lastStep.success) {
-                sb.appendLine("- 上一步操作失败了，请尝试其他方法")
-            }
-        }
-        sb.appendLine("- 必须调用一个工具函数，不要只输出文字")
+        // 指示
+        sb.appendLine("## 请求")
+        sb.appendLine("根据以上信息，调用合适的工具执行下一步操作。")
         
         return sb.toString()
     }
-    
+
     /**
-     * 根据包名获取应用名称
+     * 解析工具调用结果
      */
-    private fun getAppName(packageName: String): String {
-        return when {
-            packageName.contains("tencent.mm") -> "微信"
-            packageName.contains("tencent.mobileqq") -> "QQ"
-            packageName.contains("taobao") -> "淘宝"
-            packageName.contains("tmall") -> "天猫"
-            packageName.contains("jd") -> "京东"
-            packageName.contains("meituan") -> "美团"
-            packageName.contains("dianping") -> "大众点评"
-            packageName.contains("alipay") -> "支付宝"
-            packageName.contains("douyin") -> "抖音"
-            packageName.contains("kuaishou") -> "快手"
-            packageName.contains("weibo") -> "微博"
-            packageName.contains("bilibili") -> "哔哩哔哩"
-            packageName.contains("netease.cloudmusic") -> "网易云音乐"
-            packageName.contains("kugou") -> "酷狗音乐"
-            packageName.contains("qqmusic") -> "QQ音乐"
-            packageName.contains("baidu.searchbox") -> "百度"
-            packageName.contains("chrome") -> "Chrome"
-            packageName.contains("browser") -> "浏览器"
-            packageName.contains("settings") -> "设置"
-            packageName.contains("launcher") -> "桌面"
-            packageName.contains("dialer") -> "电话"
-            packageName.contains("contacts") -> "联系人"
-            packageName.contains("messaging") || packageName.contains("mms") -> "短信"
-            packageName.contains("camera") -> "相机"
-            packageName.contains("gallery") || packageName.contains("photos") -> "相册"
-            packageName.contains("calendar") -> "日历"
-            packageName.contains("clock") || packageName.contains("alarm") -> "时钟"
-            packageName.contains("calculator") -> "计算器"
-            packageName.contains("filemanager") || packageName.contains("files") -> "文件管理"
-            else -> packageName.substringAfterLast(".")
+    private fun parseToolCallResult(
+        result: ToolCallResult,
+        task: String,
+        screenState: ScreenState,
+        history: List<AgentStep>
+    ): AiDecision {
+        Logger.i("=== Parsing Tool Result ===", TAG)
+        Logger.i("hasToolCall: ${result.hasToolCall}, hasText: ${result.hasTextResponse}", TAG)
+        
+        // 优先处理工具调用
+        if (result.hasToolCall && result.toolCall != null) {
+            return parseToolCall(result.toolCall, result.reasoning)
         }
+        
+        // 处理文本响应
+        if (result.hasTextResponse && !result.textResponse.isNullOrBlank()) {
+            return parseTextResponse(result.textResponse, result.reasoning)
+        }
+        
+        // 空响应
+        Logger.w("Empty response from LLM", TAG)
+        return AiDecision(
+            thought = "AI返回空响应",
+            action = AgentAction(
+                type = ActionType.ASK_USER,
+                description = "需要确认",
+                question = "抱歉，我没有理解您的需求。请问您想让我做什么？"
+            )
+        )
     }
 
     /**
      * 解析工具调用
      */
-    private fun parseToolCall(toolCall: ToolCall, reasoning: String? = null): AiDecision {
+    private fun parseToolCall(toolCall: ToolCall, reasoning: String?): AiDecision {
         val functionName = toolCall.function.name
         val arguments = try {
             gson.fromJson(toolCall.function.arguments, JsonObject::class.java)
         } catch (e: Exception) {
-            Logger.e("Failed to parse tool arguments: ${toolCall.function.arguments}", e, TAG)
+            Logger.e("Failed to parse arguments: ${toolCall.function.arguments}", e, TAG)
             JsonObject()
         }
         
-        Logger.i("Parsing tool call: $functionName with args: $arguments", TAG)
-        val thought = reasoning ?: "执行: $functionName"
+        Logger.i("Tool: $functionName", TAG)
+        Logger.d("Args: $arguments", TAG)
         
+        val thought = reasoning ?: "执行: $functionName"
         val description = arguments.get("description")?.asString ?: functionName
         
         val action = when (functionName) {
-            // 点击操作
+            // 点击
             "tap" -> AgentAction(
                 type = ActionType.TAP,
                 description = description,
                 x = arguments.get("x")?.asInt,
                 y = arguments.get("y")?.asInt
             )
+            
             "long_press" -> AgentAction(
                 type = ActionType.LONG_PRESS,
                 description = description,
@@ -519,6 +330,7 @@ class ActionDecider(
                 y = arguments.get("y")?.asInt,
                 duration = arguments.get("duration")?.asInt ?: 800
             )
+            
             "double_tap" -> AgentAction(
                 type = ActionType.DOUBLE_TAP,
                 description = description,
@@ -526,27 +338,31 @@ class ActionDecider(
                 y = arguments.get("y")?.asInt
             )
             
-            // 滑动操作
+            // 滑动
             "swipe_up" -> AgentAction(
                 type = ActionType.SWIPE_UP,
                 description = description,
                 swipeDistance = arguments.get("distance")?.asInt ?: 50
             )
+            
             "swipe_down" -> AgentAction(
                 type = ActionType.SWIPE_DOWN,
                 description = description,
                 swipeDistance = arguments.get("distance")?.asInt ?: 50
             )
+            
             "swipe_left" -> AgentAction(
                 type = ActionType.SWIPE_LEFT,
                 description = description,
                 swipeDistance = arguments.get("distance")?.asInt ?: 30
             )
+            
             "swipe_right" -> AgentAction(
                 type = ActionType.SWIPE_RIGHT,
                 description = description,
                 swipeDistance = arguments.get("distance")?.asInt ?: 30
             )
+            
             "swipe" -> AgentAction(
                 type = ActionType.SWIPE,
                 description = description,
@@ -557,41 +373,73 @@ class ActionDecider(
                 duration = arguments.get("duration")?.asInt ?: 300
             )
             
-            // 输入操作
+            "scroll" -> {
+                val direction = arguments.get("direction")?.asString ?: "down"
+                val scrollType = when (direction) {
+                    "up" -> ActionType.SWIPE_UP
+                    "down" -> ActionType.SWIPE_DOWN
+                    "left" -> ActionType.SWIPE_LEFT
+                    "right" -> ActionType.SWIPE_RIGHT
+                    else -> ActionType.SWIPE_DOWN
+                }
+                AgentAction(
+                    type = scrollType,
+                    description = description,
+                    swipeDistance = 40
+                )
+            }
+            
+            // 输入
             "input_text" -> AgentAction(
                 type = ActionType.INPUT_TEXT,
                 description = description,
                 text = arguments.get("text")?.asString ?: ""
             )
+            
             "clear_text" -> AgentAction(
                 type = ActionType.CLEAR_TEXT,
                 description = description
             )
             
-            // 按键操作
+            // 按键
             "press_back" -> AgentAction(
                 type = ActionType.PRESS_BACK,
                 description = description
             )
+            
             "press_home" -> AgentAction(
                 type = ActionType.PRESS_HOME,
                 description = description
             )
+            
             "press_recent" -> AgentAction(
                 type = ActionType.PRESS_RECENT,
                 description = description
             )
             
-            // 应用操作
+            "press_enter" -> AgentAction(
+                type = ActionType.PRESS_ENTER,
+                description = description
+            )
+            
+            // 应用
             "open_app" -> AgentAction(
                 type = ActionType.OPEN_APP,
                 description = description,
                 appName = arguments.get("app")?.asString
             )
+            
             "close_app" -> AgentAction(
                 type = ActionType.CLOSE_APP,
                 description = description,
                 appName = arguments.get("app")?.asString
+            )
+            
+            // 视觉 - 需要调用 VLM
+            "describe_screen" -> AgentAction(
+                type = ActionType.DESCRIBE_SCREEN,
+                description = description,
+                text = arguments.get("focus")?.asString
             )
             
             // 等待
@@ -601,693 +449,172 @@ class ActionDecider(
                 waitTime = arguments.get("time")?.asLong ?: 2000L
             )
             
-            // 任务状态
+            // 状态
             "finished" -> AgentAction(
                 type = ActionType.FINISHED,
-                description = "任务完成",
-                resultMessage = arguments.get("message")?.asString ?: "任务已完成"
+                description = description,
+                resultMessage = arguments.get("message")?.asString
             )
+            
             "failed" -> AgentAction(
                 type = ActionType.FAILED,
-                description = "任务失败",
-                resultMessage = arguments.get("message")?.asString ?: "任务失败"
+                description = description,
+                resultMessage = arguments.get("message")?.asString
             )
+            
             "ask_user" -> AgentAction(
                 type = ActionType.ASK_USER,
-                description = "询问用户",
-                question = arguments.get("question")?.asString ?: "需要更多信息"
+                description = description,
+                question = arguments.get("question")?.asString
             )
             
-            // 滚动操作
-            "scroll" -> {
-                val direction = arguments.get("direction")?.asString ?: "down"
-                val scrollDir = when (direction) {
-                    "up" -> ScrollDirection.UP
-                    "down" -> ScrollDirection.DOWN
-                    "left" -> ScrollDirection.LEFT
-                    "right" -> ScrollDirection.RIGHT
-                    else -> ScrollDirection.DOWN
-                }
+            else -> {
+                Logger.w("Unknown tool: $functionName", TAG)
                 AgentAction(
-                    type = ActionType.SCROLL,
-                    description = description,
-                    scrollDirection = scrollDir,
-                    scrollCount = arguments.get("count")?.asInt ?: 1
+                    type = ActionType.ASK_USER,
+                    description = "未知工具",
+                    question = "抱歉，我不确定如何执行这个操作。请问您能更详细地描述吗？"
                 )
             }
-            
-            // 按回车
-            "press_enter" -> AgentAction(
-                type = ActionType.PRESS_KEY,
-                description = description,
-                keyCode = 66  // KEYCODE_ENTER
-            )
-            
-            else -> AgentAction(
-                type = ActionType.FAILED,
-                description = "未知操作: $functionName",
-                resultMessage = "不支持的操作类型: $functionName"
-            )
         }
         
-        return AiDecision(
-            thought = thought,
-            action = action
-        )
+        return AiDecision(thought = thought, action = action)
     }
 
     /**
-     * 解析AI响应
+     * 解析文本响应
      */
-    private fun parseAiResponse(response: String): AiDecision {
-        Logger.d("Raw AI response: ${response.take(300)}", TAG)
+    private fun parseTextResponse(text: String, reasoning: String?): AiDecision {
+        val thought = reasoning ?: text.take(100)
+        val textLower = text.lowercase()
         
-        // 清洗响应
-        val cleanedResponse = cleanResponse(response)
-        Logger.d("Cleaned response: ${cleanedResponse.take(300)}", TAG)
+        Logger.d("Parsing text: ${text.take(200)}", TAG)
         
-        try {
-            // 提取JSON部分
-            val jsonStr = extractJson(cleanedResponse)
-            val jsonObject = JsonParser.parseString(jsonStr).asJsonObject
-            
-            val thought = jsonObject.get("thought")?.asString ?: ""
-            
-            // 尝试多种方式获取 action
-            val actionObj = jsonObject.getAsJsonObject("action")
-                ?: jsonObject // 如果没有 action 字段，可能整个就是 action
-            
-            if (actionObj != null) {
-                val action = parseAction(actionObj)
-                return AiDecision(thought = thought, action = action)
-            }
-            
-        } catch (e: Exception) {
-            Logger.e("Failed to parse AI response: ${e.message}", e, TAG)
-        }
+        // 检查是否是问题
+        val isQuestion = text.contains("？") || text.contains("?") ||
+                         textLower.contains("请问") || textLower.contains("请提供")
         
-        // 尝试直接解析为 action JSON
-        try {
-            val jsonStr = extractJson(response)
-            val jsonObject = JsonParser.parseString(jsonStr).asJsonObject
-            
-            // 检查是否有 action 字段（表示这是一个 action 对象）
-            if (jsonObject.has("action") || jsonObject.has("type")) {
-                val action = parseAction(jsonObject)
-                return AiDecision(thought = "", action = action)
-            }
-        } catch (e: Exception) {
-            Logger.d("Direct action parse also failed", TAG)
-        }
-        
-        // 尝试简单解析
-        return trySimpleParse(response)
-    }
-
-    /**
-     * 清洗AI响应，去除不必要的内容
-     */
-    private fun cleanResponse(response: String): String {
-        var cleaned = response.trim()
-        
-        // 去除思考过程标记
-        cleaned = cleaned.replace(Regex("<think>.*?</think>", RegexOption.DOT_MATCHES_ALL), "")
-        cleaned = cleaned.replace(Regex("<thinking>.*?</thinking>", RegexOption.DOT_MATCHES_ALL), "")
-        
-        // 去除代码块标记
-        cleaned = cleaned.replace(Regex("```json\\s*", RegexOption.IGNORE_CASE), "")
-        cleaned = cleaned.replace(Regex("```\\s*$", RegexOption.MULTILINE), "")
-        cleaned = cleaned.replace("```", "")
-        
-        // 去除开头的解释文字（到第一个{为止）
-        val firstBrace = cleaned.indexOf('{')
-        if (firstBrace > 0) {
-            val lastBrace = cleaned.lastIndexOf('}')
-            if (lastBrace > firstBrace) {
-                cleaned = cleaned.substring(firstBrace, lastBrace + 1)
-            }
-        }
-        
-        // 去除多余的空白
-        cleaned = cleaned.trim()
-        
-        return cleaned
-    }
-    
-    /**
-     * 从响应中提取JSON
-     */
-    private fun extractJson(response: String): String {
-        // 如果已经是JSON，直接返回
-        val trimmed = response.trim()
-        if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
-            return trimmed
-        }
-        
-        // 尝试找到JSON代码块
-        val codeBlockRegex = Regex("```(?:json)?\\s*([\\s\\S]*?)```")
-        codeBlockRegex.find(response)?.let {
-            return it.groupValues[1].trim()
-        }
-        
-        // 尝试找到JSON对象（从第一个{到最后一个}）
-        val firstBrace = response.indexOf('{')
-        val lastBrace = response.lastIndexOf('}')
-        if (firstBrace != -1 && lastBrace > firstBrace) {
-            return response.substring(firstBrace, lastBrace + 1)
-        }
-        
-        return response
-    }
-
-    /**
-     * 解析操作对象
-     */
-    private fun parseAction(actionObj: JsonObject): AgentAction {
-        val actionTypeStr = actionObj.get("action")?.asString?.uppercase()
-            ?: actionObj.get("type")?.asString?.uppercase()
-            ?: "FAILED"
-        
-        val actionType = try {
-            ActionType.valueOf(actionTypeStr)
-        } catch (e: Exception) {
-            // 尝试映射常见的别名
-            mapActionAlias(actionTypeStr)
-        }
-        
-        val description = actionObj.get("description")?.asString ?: actionTypeStr
-        
-        return when (actionType) {
-            // 基础触摸操作
-            ActionType.TAP -> AgentAction(
-                type = ActionType.TAP,
-                description = description,
-                x = actionObj.get("x")?.asInt,
-                y = actionObj.get("y")?.asInt,
-                elementDescription = actionObj.get("element")?.asString
-            )
-            
-            ActionType.DOUBLE_TAP -> AgentAction(
-                type = ActionType.DOUBLE_TAP,
-                description = description,
-                x = actionObj.get("x")?.asInt,
-                y = actionObj.get("y")?.asInt
-            )
-            
-            ActionType.LONG_PRESS -> AgentAction(
-                type = ActionType.LONG_PRESS,
-                description = description,
-                x = actionObj.get("x")?.asInt,
-                y = actionObj.get("y")?.asInt,
-                duration = actionObj.get("duration")?.asInt ?: 800
-            )
-            
-            ActionType.SWIPE -> AgentAction(
-                type = ActionType.SWIPE,
-                description = description,
-                startX = actionObj.get("startX")?.asInt,
-                startY = actionObj.get("startY")?.asInt,
-                endX = actionObj.get("endX")?.asInt,
-                endY = actionObj.get("endY")?.asInt,
-                duration = actionObj.get("duration")?.asInt ?: 300
-            )
-            
-            // 方向滑动
-            ActionType.SWIPE_UP -> AgentAction(
-                type = ActionType.SWIPE_UP,
-                description = description,
-                swipeDistance = actionObj.get("distance")?.asInt ?: 50,
-                duration = actionObj.get("duration")?.asInt ?: 300
-            )
-            
-            ActionType.SWIPE_DOWN -> AgentAction(
-                type = ActionType.SWIPE_DOWN,
-                description = description,
-                swipeDistance = actionObj.get("distance")?.asInt ?: 50,
-                duration = actionObj.get("duration")?.asInt ?: 300
-            )
-            
-            ActionType.SWIPE_LEFT -> AgentAction(
-                type = ActionType.SWIPE_LEFT,
-                description = description,
-                swipeDistance = actionObj.get("distance")?.asInt ?: 30,
-                duration = actionObj.get("duration")?.asInt ?: 300
-            )
-            
-            ActionType.SWIPE_RIGHT -> AgentAction(
-                type = ActionType.SWIPE_RIGHT,
-                description = description,
-                swipeDistance = actionObj.get("distance")?.asInt ?: 30,
-                duration = actionObj.get("duration")?.asInt ?: 300
-            )
-            
-            // 滚动操作
-            ActionType.SCROLL -> AgentAction(
-                type = ActionType.SCROLL,
-                description = description,
-                scrollDirection = parseScrollDirection(actionObj.get("direction")?.asString),
-                scrollCount = actionObj.get("count")?.asInt ?: 1
-            )
-            
-            ActionType.SCROLL_TO_TOP -> AgentAction(
-                type = ActionType.SCROLL_TO_TOP,
-                description = description
-            )
-            
-            ActionType.SCROLL_TO_BOTTOM -> AgentAction(
-                type = ActionType.SCROLL_TO_BOTTOM,
-                description = description
-            )
-            
-            // 输入操作
-            ActionType.INPUT_TEXT -> AgentAction(
-                type = ActionType.INPUT_TEXT,
-                description = description,
-                text = actionObj.get("text")?.asString ?: "",
-                x = actionObj.get("x")?.asInt,
-                y = actionObj.get("y")?.asInt
-            )
-            
-            ActionType.CLEAR_TEXT -> AgentAction(
-                type = ActionType.CLEAR_TEXT,
-                description = description
-            )
-            
-            // 按键操作
-            ActionType.PRESS_KEY -> AgentAction(
-                type = ActionType.PRESS_KEY,
-                description = description,
-                keyName = actionObj.get("key")?.asString,
-                keyCode = actionObj.get("keyCode")?.asInt
-            )
-            
-            ActionType.PRESS_BACK -> AgentAction(
-                type = ActionType.PRESS_BACK,
-                description = description
-            )
-            
-            ActionType.PRESS_HOME -> AgentAction(
-                type = ActionType.PRESS_HOME,
-                description = description
-            )
-            
-            ActionType.PRESS_RECENT -> AgentAction(
-                type = ActionType.PRESS_RECENT,
-                description = description
-            )
-            
-            // 应用操作
-            ActionType.OPEN_APP -> AgentAction(
-                type = ActionType.OPEN_APP,
-                description = description,
-                packageName = actionObj.get("package")?.asString,
-                appName = actionObj.get("app")?.asString
-            )
-            
-            ActionType.CLOSE_APP -> AgentAction(
-                type = ActionType.CLOSE_APP,
-                description = description,
-                packageName = actionObj.get("package")?.asString,
-                appName = actionObj.get("app")?.asString
-            )
-            
-            ActionType.OPEN_URL -> AgentAction(
-                type = ActionType.OPEN_URL,
-                description = description,
-                url = actionObj.get("url")?.asString
-            )
-            
-            ActionType.OPEN_SETTINGS -> AgentAction(
-                type = ActionType.OPEN_SETTINGS,
-                description = description,
-                text = actionObj.get("setting")?.asString
-            )
-            
-            // 系统操作
-            ActionType.TAKE_SCREENSHOT -> AgentAction(
-                type = ActionType.TAKE_SCREENSHOT,
-                description = description
-            )
-            
-            ActionType.COPY_TEXT -> AgentAction(
-                type = ActionType.COPY_TEXT,
-                description = description
-            )
-            
-            ActionType.PASTE_TEXT -> AgentAction(
-                type = ActionType.PASTE_TEXT,
-                description = description
-            )
-            
-            // 通知操作
-            ActionType.OPEN_NOTIFICATION -> AgentAction(
-                type = ActionType.OPEN_NOTIFICATION,
-                description = description
-            )
-            
-            ActionType.CLEAR_NOTIFICATION -> AgentAction(
-                type = ActionType.CLEAR_NOTIFICATION,
-                description = description
-            )
-            
-            // 等待操作
-            ActionType.WAIT -> AgentAction(
-                type = ActionType.WAIT,
-                description = description,
-                waitTime = actionObj.get("time")?.asLong ?: 1000L
-            )
-            
-            ActionType.WAIT_FOR_ELEMENT -> AgentAction(
-                type = ActionType.WAIT_FOR_ELEMENT,
-                description = description,
-                waitForText = actionObj.get("text")?.asString,
-                timeout = actionObj.get("timeout")?.asLong ?: 10000L
-            )
-            
-            // 任务状态
-            ActionType.FINISHED -> AgentAction(
-                type = ActionType.FINISHED,
-                description = description,
-                resultMessage = actionObj.get("message")?.asString ?: "任务完成"
-            )
-            
-            ActionType.FAILED -> AgentAction(
-                type = ActionType.FAILED,
-                description = description,
-                resultMessage = actionObj.get("message")?.asString ?: "任务失败"
-            )
-            
-            ActionType.ASK_USER -> AgentAction(
-                type = ActionType.ASK_USER,
-                description = description,
-                question = actionObj.get("question")?.asString ?: "需要您的确认"
-            )
-        }
-    }
-    
-    /**
-     * 映射操作别名
-     */
-    private fun mapActionAlias(actionStr: String): ActionType {
-        return when (actionStr.uppercase()) {
-            "CLICK", "点击" -> ActionType.TAP
-            "双击" -> ActionType.DOUBLE_TAP
-            "长按" -> ActionType.LONG_PRESS
-            "滑动" -> ActionType.SWIPE
-            "上滑", "向上滑动" -> ActionType.SWIPE_UP
-            "下滑", "向下滑动" -> ActionType.SWIPE_DOWN
-            "左滑", "向左滑动" -> ActionType.SWIPE_LEFT
-            "右滑", "向右滑动" -> ActionType.SWIPE_RIGHT
-            "滚动" -> ActionType.SCROLL
-            "输入", "打字" -> ActionType.INPUT_TEXT
-            "清空" -> ActionType.CLEAR_TEXT
-            "返回" -> ActionType.PRESS_BACK
-            "主页", "回到主页" -> ActionType.PRESS_HOME
-            "最近任务", "多任务" -> ActionType.PRESS_RECENT
-            "打开应用", "启动应用" -> ActionType.OPEN_APP
-            "关闭应用" -> ActionType.CLOSE_APP
-            "打开网址", "打开链接" -> ActionType.OPEN_URL
-            "打开设置" -> ActionType.OPEN_SETTINGS
-            "截图" -> ActionType.TAKE_SCREENSHOT
-            "复制" -> ActionType.COPY_TEXT
-            "粘贴" -> ActionType.PASTE_TEXT
-            "通知栏" -> ActionType.OPEN_NOTIFICATION
-            "清除通知" -> ActionType.CLEAR_NOTIFICATION
-            "等待" -> ActionType.WAIT
-            "完成", "成功" -> ActionType.FINISHED
-            "失败" -> ActionType.FAILED
-            "询问", "确认" -> ActionType.ASK_USER
-            else -> ActionType.FAILED
-        }
-    }
-
-    /**
-     * 解析滚动方向
-     */
-    private fun parseScrollDirection(direction: String?): ScrollDirection {
-        return when (direction?.uppercase()) {
-            "UP", "上" -> ScrollDirection.UP
-            "DOWN", "下" -> ScrollDirection.DOWN
-            "LEFT", "左" -> ScrollDirection.LEFT
-            "RIGHT", "右" -> ScrollDirection.RIGHT
-            else -> ScrollDirection.DOWN
-        }
-    }
-
-    /**
-     * 简单解析尝试（当JSON解析失败时）
-     */
-    private fun trySimpleParse(response: String): AiDecision {
-        val responseLower = response.lowercase()
-        Logger.d("Trying simple parse for: ${response.take(200)}", TAG)
-        
-        // 检查是否表示完成
-        if (responseLower.contains("finished") || 
-            responseLower.contains("完成") || 
-            responseLower.contains("成功") ||
-            responseLower.contains("已经完成")) {
+        if (isQuestion) {
             return AiDecision(
-                thought = response,
+                thought = thought,
+                action = AgentAction(
+                    type = ActionType.ASK_USER,
+                    description = "需要确认",
+                    question = text.take(300)
+                )
+            )
+        }
+        
+        // 检查完成
+        if (textLower.contains("完成") && !textLower.contains("无法")) {
+            return AiDecision(
+                thought = thought,
                 action = AgentAction(
                     type = ActionType.FINISHED,
                     description = "任务完成",
-                    resultMessage = extractMessage(response) ?: "任务已完成"
+                    resultMessage = text.take(200)
                 )
             )
         }
         
-        // 尝试从文本中提取操作
-        // 检查输入操作
-        val inputRegex = Regex("(?:输入|input|type)[：:\"']?\\s*[\"']?([^\"'\\n]+)[\"']?", RegexOption.IGNORE_CASE)
-        inputRegex.find(response)?.let { match ->
-            val text = match.groupValues[1].trim()
-            if (text.isNotEmpty()) {
-                Logger.d("Extracted input text: $text", TAG)
-                return AiDecision(
-                    thought = "需要输入文字",
-                    action = AgentAction(
-                        type = ActionType.INPUT_TEXT,
-                        description = "输入: $text",
-                        text = text
-                    )
-                )
-            }
-        }
-        
-        // 检查点击操作
-        val tapRegex = Regex("(?:点击|tap|click)[：:]?\\s*\\(?\\s*(\\d+)\\s*[,，]\\s*(\\d+)\\s*\\)?", RegexOption.IGNORE_CASE)
-        tapRegex.find(response)?.let { match ->
-            val x = match.groupValues[1].toIntOrNull()
-            val y = match.groupValues[2].toIntOrNull()
-            if (x != null && y != null) {
-                Logger.d("Extracted tap: ($x, $y)", TAG)
-                return AiDecision(
-                    thought = "需要点击",
-                    action = AgentAction(
-                        type = ActionType.TAP,
-                        description = "点击 ($x, $y)",
-                        x = x,
-                        y = y
-                    )
-                )
-            }
-        }
-        
-        // 检查返回操作
-        if (responseLower.contains("返回") || responseLower.contains("back")) {
+        // 检查失败
+        if (textLower.contains("无法") || textLower.contains("失败")) {
             return AiDecision(
-                thought = "需要返回",
-                action = AgentAction(
-                    type = ActionType.PRESS_BACK,
-                    description = "返回上一页"
-                )
-            )
-        }
-        
-        // 检查滑动操作
-        if (responseLower.contains("向下滑") || responseLower.contains("下滑") || responseLower.contains("scroll down")) {
-            return AiDecision(
-                thought = "需要向下滑动",
-                action = AgentAction(
-                    type = ActionType.SWIPE_DOWN,
-                    description = "向下滑动"
-                )
-            )
-        }
-        if (responseLower.contains("向上滑") || responseLower.contains("上滑") || responseLower.contains("scroll up")) {
-            return AiDecision(
-                thought = "需要向上滑动",
-                action = AgentAction(
-                    type = ActionType.SWIPE_UP,
-                    description = "向上滑动"
-                )
-            )
-        }
-        
-        // 检查是否表示失败
-        if (responseLower.contains("failed") || 
-            responseLower.contains("失败") || 
-            responseLower.contains("无法") ||
-            responseLower.contains("error")) {
-            return AiDecision(
-                thought = response,
+                thought = thought,
                 action = AgentAction(
                     type = ActionType.FAILED,
                     description = "任务失败",
-                    resultMessage = extractMessage(response) ?: "无法完成任务"
+                    resultMessage = text.take(200)
                 )
             )
         }
         
-        // 检查是否需要等待
-        if (responseLower.contains("等待") || responseLower.contains("wait")) {
-            return AiDecision(
-                thought = "需要等待",
-                action = AgentAction(
-                    type = ActionType.WAIT,
-                    description = "等待页面加载",
-                    waitTime = 2000
-                )
-            )
-        }
-        
-        // 如果响应很短，可能是简单回复，当作完成处理
-        if (response.length < 50 && !responseLower.contains("json") && !responseLower.contains("{")) {
-            return AiDecision(
-                thought = response,
-                action = AgentAction(
-                    type = ActionType.FINISHED,
-                    description = "AI回复",
-                    resultMessage = response
-                )
-            )
-        }
-        
-        // 默认返回失败
-        Logger.w("Cannot parse response, returning failed", TAG)
+        // 默认当作需要确认
         return AiDecision(
-            thought = "无法解析AI响应",
+            thought = thought,
             action = AgentAction(
-                type = ActionType.FAILED,
-                description = "解析失败",
-                resultMessage = "无法理解AI的响应，请重试"
+                type = ActionType.ASK_USER,
+                description = "AI回复",
+                question = text.take(300)
             )
         )
-    }
-    
-    /**
-     * 从响应中提取消息
-     */
-    private fun extractMessage(response: String): String? {
-        // 尝试提取引号中的内容
-        val quoteRegex = Regex("[\"']([^\"']+)[\"']")
-        quoteRegex.find(response)?.let {
-            return it.groupValues[1]
-        }
-        
-        // 尝试提取冒号后的内容
-        val colonRegex = Regex("(?:message|消息|结果)[：:]\\s*(.+)")
-        colonRegex.find(response)?.let {
-            return it.groupValues[1].trim()
-        }
-        
-        return null
     }
 
     /**
-     * 简单对话（不需要执行操作）
+     * 获取应用显示名称
      */
-    suspend fun simpleChat(prompt: String): String = withContext(Dispatchers.IO) {
-        val messages = listOf(
-            ChatMessage(MessageRole.USER, prompt)
-        )
-        
-        val result = aiClient.chat(messages, PromptBuilder.SIMPLE_CHAT_PROMPT)
-        
-        result.fold(
-            onSuccess = { response ->
-                response
-            },
-            onFailure = { error ->
-                Logger.e("Simple chat failed", error, TAG)
-                "抱歉，AI服务暂时不可用：${error.message}"
-            }
-        )
-    }
-    
-    /**
-     * 分析任务是否需要执行操作
-     */
-    suspend fun analyzeTask(userInput: String): TaskAnalysis = withContext(Dispatchers.IO) {
-        val prompt = PromptBuilder.buildTaskAnalysisPrompt(userInput)
-        val messages = listOf(ChatMessage(MessageRole.USER, prompt))
-        
-        val result = aiClient.chat(messages, PromptBuilder.SYSTEM_PROMPT)
-        
-        result.fold(
-            onSuccess = { response ->
-                parseTaskAnalysis(response, userInput)
-            },
-            onFailure = { error ->
-                Logger.e("Task analysis failed", error, TAG)
-                TaskAnalysis(
-                    originalInput = userInput,
-                    needsExecution = false,
-                    isSimpleChat = true,
-                    errorMessage = error.message
-                )
-            }
-        )
-    }
-    
-    /**
-     * 解析任务分析结果
-     */
-    private fun parseTaskAnalysis(response: String, originalInput: String): TaskAnalysis {
-        try {
-            val jsonStr = extractJson(response)
-            val jsonObject = JsonParser.parseString(jsonStr).asJsonObject
-            
-            val needsApp = jsonObject.get("needsApp")?.asBoolean ?: false
-            val app = jsonObject.get("app")?.asString
-            val steps = jsonObject.getAsJsonArray("steps")?.map { it.asString } ?: emptyList()
-            val isSimpleChat = jsonObject.get("isSimpleChat")?.asBoolean ?: !needsApp
-            
-            return TaskAnalysis(
-                originalInput = originalInput,
-                needsExecution = needsApp || steps.isNotEmpty(),
-                isSimpleChat = isSimpleChat,
-                targetApp = app,
-                plannedSteps = steps
-            )
-        } catch (e: Exception) {
-            Logger.e("Failed to parse task analysis", e, TAG)
-            // 默认当作需要执行的任务
-            return TaskAnalysis(
-                originalInput = originalInput,
-                needsExecution = true,
-                isSimpleChat = false
-            )
+    private fun getAppName(packageName: String): String {
+        val lowerPackage = packageName.lowercase()
+        return when {
+            lowerPackage.contains("wechat") || lowerPackage.contains("mm") -> "微信"
+            lowerPackage.contains("alipay") -> "支付宝"
+            lowerPackage.contains("taobao") -> "淘宝"
+            lowerPackage.contains("jd") -> "京东"
+            lowerPackage.contains("douyin") || lowerPackage.contains("tiktok") -> "抖音"
+            lowerPackage.contains("kuaishou") -> "快手"
+            lowerPackage.contains("bilibili") -> "B站"
+            lowerPackage.contains("weibo") -> "微博"
+            lowerPackage.contains("meituan") -> "美团"
+            lowerPackage.contains("eleme") -> "饿了么"
+            lowerPackage.contains("didi") -> "滴滴"
+            lowerPackage.contains("baidu") -> "百度"
+            lowerPackage.contains("qq") -> "QQ"
+            lowerPackage.contains("chrome") -> "Chrome"
+            lowerPackage.contains("settings") -> "设置"
+            lowerPackage.contains("launcher") -> "桌面"
+            lowerPackage.contains("dialer") || lowerPackage.contains("phone") -> "电话"
+            lowerPackage.contains("contacts") -> "联系人"
+            lowerPackage.contains("messaging") || lowerPackage.contains("mms") -> "短信"
+            lowerPackage.contains("camera") -> "相机"
+            lowerPackage.contains("gallery") || lowerPackage.contains("photos") -> "相册"
+            lowerPackage.contains("calendar") -> "日历"
+            lowerPackage.contains("clock") || lowerPackage.contains("alarm") -> "时钟"
+            lowerPackage.contains("calculator") -> "计算器"
+            lowerPackage.contains("filemanager") || lowerPackage.contains("files") -> "文件管理"
+            else -> packageName.substringAfterLast(".")
         }
     }
 
-    /**
-     * 测试AI连接
-     */
-    suspend fun testConnection(): Boolean {
-        return aiClient.testConnection().getOrDefault(false)
+    companion object {
+        /**
+         * 应用关键词映射
+         */
+        val APP_KEYWORDS = mapOf(
+            "微信" to "微信",
+            "wechat" to "微信",
+            "支付宝" to "支付宝",
+            "alipay" to "支付宝",
+            "淘宝" to "淘宝",
+            "taobao" to "淘宝",
+            "京东" to "京东",
+            "jd" to "京东",
+            "抖音" to "抖音",
+            "douyin" to "抖音",
+            "tiktok" to "抖音",
+            "快手" to "快手",
+            "b站" to "哔哩哔哩",
+            "bilibili" to "哔哩哔哩",
+            "微博" to "微博",
+            "weibo" to "微博",
+            "美团" to "美团",
+            "meituan" to "美团",
+            "饿了么" to "饿了么",
+            "滴滴" to "滴滴出行",
+            "百度" to "百度",
+            "qq" to "QQ",
+            "设置" to "设置",
+            "settings" to "设置",
+            "相机" to "相机",
+            "camera" to "相机",
+            "相册" to "相册",
+            "photos" to "相册",
+            "gallery" to "相册",
+            "日历" to "日历",
+            "calendar" to "日历",
+            "时钟" to "时钟",
+            "闹钟" to "时钟",
+            "计算器" to "计算器",
+            "calculator" to "计算器"
+        )
     }
 }
-
-/**
- * 任务分析结果
- */
-data class TaskAnalysis(
-    val originalInput: String,
-    val needsExecution: Boolean,      // 是否需要执行手机操作
-    val isSimpleChat: Boolean,        // 是否是简单对话
-    val targetApp: String? = null,    // 目标应用
-    val plannedSteps: List<String> = emptyList(),  // 计划的步骤
-    val errorMessage: String? = null
-)
-
