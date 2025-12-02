@@ -1,21 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- 主题色 -->
-    <color name="primary">#6366F1</color>
-    <color name="primary_variant">#4F46E5</color>
-    <color name="secondary">#10B981</color>
-    <color name="secondary_variant">#059669</color>
+    <!-- 主题色（暖色调，避免蓝紫色） -->
+    <color name="primary">#E28C3C</color>
+    <color name="primary_variant">#BB6B1C</color>
+    <color name="secondary">#52B788</color>
+    <color name="secondary_variant">#3A8E65</color>
     
     <!-- 背景色 -->
-    <color name="background">#0F172A</color>
-    <color name="surface">#1E293B</color>
-    <color name="surface_variant">#334155</color>
+    <color name="background">#0D0E11</color>
+    <color name="surface">#161922</color>
+    <color name="surface_variant">#1F232D</color>
     
     <!-- 文字色 -->
     <color name="on_primary">#FFFFFF</color>
-    <color name="on_secondary">#FFFFFF</color>
-    <color name="on_background">#F1F5F9</color>
-    <color name="on_surface">#E2E8F0</color>
+    <color name="on_secondary">#0F131A</color>
+    <color name="on_background">#E8EDF5</color>
+    <color name="on_surface">#D8DEE9</color>
     
     <!-- 悬浮球颜色 -->
     <color name="floating_ball_default">#1A1A1A</color>

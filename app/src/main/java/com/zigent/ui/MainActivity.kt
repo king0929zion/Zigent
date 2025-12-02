@@ -26,7 +26,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -231,10 +230,11 @@ private fun HomeScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { 
+                title = {
                     Text(
                         "Zigent",
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onBackground
                     )
                 },
                 actions = {
@@ -243,7 +243,8 @@ private fun HomeScreen(
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = Color.Transparent
+                    containerColor = MaterialTheme.colorScheme.background,
+                    titleContentColor = MaterialTheme.colorScheme.onBackground
                 )
             )
         }
@@ -251,14 +252,7 @@ private fun HomeScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(
-                            Color(0xFF1a1a2e),
-                            Color(0xFF16213e)
-                        )
-                    )
-                )
+                .background(MaterialTheme.colorScheme.background)
                 .padding(paddingValues)
                 .verticalScroll(scrollState)
                 .padding(16.dp),
@@ -286,7 +280,7 @@ private fun HomeScreen(
             Text(
                 "权限设置",
                 style = MaterialTheme.typography.titleMedium,
-                color = Color.White,
+                color = MaterialTheme.colorScheme.onBackground,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(bottom = 12.dp)
@@ -332,7 +326,7 @@ private fun HomeScreen(
             Text(
                 "AI配置",
                 style = MaterialTheme.typography.titleMedium,
-                color = Color.White,
+                color = MaterialTheme.colorScheme.onBackground,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(bottom = 12.dp)
@@ -358,11 +352,17 @@ private fun StatusCard(
     isServiceRunning: Boolean,
     statusMessage: String
 ) {
+    val highlightColor = if (isReady) {
+        MaterialTheme.colorScheme.secondaryContainer
+    } else {
+        MaterialTheme.colorScheme.errorContainer
+    }
+    val iconColor = if (isReady) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.error
+    
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
-            containerColor = if (isReady) Color(0xFF1B5E20).copy(alpha = 0.3f) 
-                           else Color(0xFFB71C1C).copy(alpha = 0.3f)
+            containerColor = highlightColor.copy(alpha = 0.8f)
         ),
         shape = RoundedCornerShape(16.dp)
     ) {
@@ -376,7 +376,7 @@ private fun StatusCard(
                 modifier = Modifier
                     .size(48.dp)
                     .clip(CircleShape)
-                    .background(if (isReady) Color(0xFF4CAF50) else Color(0xFFF44336)),
+                    .background(iconColor),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
@@ -384,7 +384,7 @@ private fun StatusCard(
                                  else if (isReady) Icons.Default.Check 
                                  else Icons.Default.Warning,
                     contentDescription = null,
-                    tint = Color.White
+                    tint = MaterialTheme.colorScheme.onPrimary
                 )
             }
             
@@ -398,13 +398,13 @@ private fun StatusCard(
                         else -> "需要配置"
                     },
                     style = MaterialTheme.typography.titleMedium,
-                    color = Color.White,
+                    color = MaterialTheme.colorScheme.onBackground,
                     fontWeight = FontWeight.Bold
                 )
                 Text(
                     text = statusMessage,
                     style = MaterialTheme.typography.bodySmall,
-                    color = Color.White.copy(alpha = 0.7f)
+                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.65f)
                 )
             }
         }
@@ -424,8 +424,8 @@ private fun ServiceControlButton(
             .fillMaxWidth()
             .height(56.dp),
         colors = ButtonDefaults.buttonColors(
-            containerColor = if (isRunning) Color(0xFFF44336) else Color(0xFF6366F1),
-            disabledContainerColor = Color.Gray
+            containerColor = if (isRunning) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+            disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant
         ),
         shape = RoundedCornerShape(28.dp)
     ) {
@@ -457,7 +457,7 @@ private fun PermissionCard(
             .padding(vertical = 4.dp)
             .clickable(enabled = !isGranted, onClick = onClick),
         colors = CardDefaults.cardColors(
-            containerColor = Color.White.copy(alpha = 0.1f)
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
         ),
         shape = RoundedCornerShape(12.dp)
     ) {
@@ -470,7 +470,7 @@ private fun PermissionCard(
             Icon(
                 imageVector = icon,
                 contentDescription = null,
-                tint = if (isGranted) Color(0xFF4CAF50) else Color.White.copy(alpha = 0.7f),
+                tint = if (isGranted) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
                 modifier = Modifier.size(24.dp)
             )
             
@@ -480,12 +480,12 @@ private fun PermissionCard(
                 Text(
                     text = title,
                     style = MaterialTheme.typography.bodyLarge,
-                    color = Color.White
+                    color = MaterialTheme.colorScheme.onSurface
                 )
                 Text(
                     text = description,
                     style = MaterialTheme.typography.bodySmall,
-                    color = Color.White.copy(alpha = 0.6f)
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.65f)
                 )
             }
             
@@ -493,18 +493,19 @@ private fun PermissionCard(
                 Icon(
                     imageVector = Icons.Default.CheckCircle,
                     contentDescription = "已授权",
-                    tint = Color(0xFF4CAF50)
+                    tint = MaterialTheme.colorScheme.secondary
                 )
             } else {
                 Icon(
                     imageVector = Icons.Default.ChevronRight,
                     contentDescription = "去设置",
-                    tint = Color.White.copy(alpha = 0.5f)
+                    tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
                 )
             }
         }
     }
 }
+
 
 @Composable
 private fun ShizukuCard(
@@ -513,19 +514,19 @@ private fun ShizukuCard(
     onOpenApp: () -> Unit
 ) {
     val (statusText, statusColor, action) = when (state) {
-        ShizukuState.NOT_INSTALLED -> Triple("未安装", Color(0xFFFF9800), onOpenApp)
-        ShizukuState.NOT_RUNNING -> Triple("未启动", Color(0xFFFF9800), onOpenApp)
-        ShizukuState.NOT_AUTHORIZED -> Triple("未授权", Color(0xFFFF9800), onRequestPermission)
-        ShizukuState.READY -> Triple("已就绪", Color(0xFF4CAF50), {})
+        ShizukuState.NOT_INSTALLED -> Triple("未安装", MaterialTheme.colorScheme.tertiary, onOpenApp)
+        ShizukuState.NOT_RUNNING -> Triple("未启动", MaterialTheme.colorScheme.tertiary, onOpenApp)
+        ShizukuState.NOT_AUTHORIZED -> Triple("未授权", MaterialTheme.colorScheme.tertiary, onRequestPermission)
+        ShizukuState.READY -> Triple("已就绪", MaterialTheme.colorScheme.secondary, {})
     }
-    
+
     Card(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 4.dp)
             .clickable(enabled = state != ShizukuState.READY, onClick = action),
         colors = CardDefaults.cardColors(
-            containerColor = Color.White.copy(alpha = 0.1f)
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
         ),
         shape = RoundedCornerShape(12.dp)
     ) {
@@ -541,38 +542,40 @@ private fun ShizukuCard(
                 tint = statusColor,
                 modifier = Modifier.size(24.dp)
             )
-            
+
             Spacer(modifier = Modifier.width(16.dp))
-            
+
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = "Shizuku (可选)",
                     style = MaterialTheme.typography.bodyLarge,
-                    color = Color.White
+                    color = MaterialTheme.colorScheme.onSurface
                 )
                 Text(
-                    text = "截屏和高级操作 · $statusText",
+                    text = "截屏和高级操作· $statusText",
                     style = MaterialTheme.typography.bodySmall,
-                    color = Color.White.copy(alpha = 0.6f)
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.65f)
                 )
             }
-            
+
             if (state == ShizukuState.READY) {
                 Icon(
                     imageVector = Icons.Default.CheckCircle,
                     contentDescription = "已就绪",
-                    tint = Color(0xFF4CAF50)
+                    tint = MaterialTheme.colorScheme.secondary
                 )
             } else {
                 Icon(
                     imageVector = Icons.Default.ChevronRight,
                     contentDescription = null,
-                    tint = Color.White.copy(alpha = 0.5f)
+                    tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
                 )
             }
         }
     }
 }
+
+
 
 @Composable
 private fun AiConfigCard(
@@ -585,8 +588,8 @@ private fun AiConfigCard(
             .fillMaxWidth()
             .clickable(onClick = onClick),
         colors = CardDefaults.cardColors(
-            containerColor = if (isConfigured) Color(0xFF6366F1).copy(alpha = 0.3f) 
-                           else Color.White.copy(alpha = 0.1f)
+            containerColor = if (isConfigured) MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)
+                           else MaterialTheme.colorScheme.surfaceVariant
         ),
         shape = RoundedCornerShape(12.dp)
     ) {
@@ -599,48 +602,50 @@ private fun AiConfigCard(
             Icon(
                 imageVector = Icons.Outlined.Psychology,
                 contentDescription = null,
-                tint = if (isConfigured) Color(0xFF6366F1) else Color.White.copy(alpha = 0.7f),
+                tint = if (isConfigured) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
                 modifier = Modifier.size(24.dp)
             )
-            
+
             Spacer(modifier = Modifier.width(16.dp))
-            
+
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = "AI 模型配置",
                     style = MaterialTheme.typography.bodyLarge,
-                    color = Color.White
+                    color = MaterialTheme.colorScheme.onSurface
                 )
                 Text(
-                    text = if (isConfigured) "已配置: $provider" else "点击配置 API Key",
+                    text = if (isConfigured) "已配置 $provider" else "点击配置 API Key",
                     style = MaterialTheme.typography.bodySmall,
-                    color = Color.White.copy(alpha = 0.6f)
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.65f)
                 )
             }
-            
+
             if (isConfigured) {
                 Icon(
                     imageVector = Icons.Default.CheckCircle,
                     contentDescription = "已配置",
-                    tint = Color(0xFF4CAF50)
+                    tint = MaterialTheme.colorScheme.secondary
                 )
             } else {
                 Icon(
                     imageVector = Icons.Default.ChevronRight,
                     contentDescription = null,
-                    tint = Color.White.copy(alpha = 0.5f)
+                    tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
                 )
             }
         }
     }
 }
 
+
+
 @Composable
 private fun UsageGuide() {
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
-            containerColor = Color.White.copy(alpha = 0.05f)
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
         ),
         shape = RoundedCornerShape(12.dp)
     ) {
@@ -650,28 +655,30 @@ private fun UsageGuide() {
             Text(
                 text = "📖 使用指南",
                 style = MaterialTheme.typography.titleMedium,
-                color = Color.White,
+                color = MaterialTheme.colorScheme.onSurface,
                 fontWeight = FontWeight.Bold
             )
-            
+
             Spacer(modifier = Modifier.height(12.dp))
-            
+
             GuideStep(number = "1", text = "授予必要权限并配置 AI")
             GuideStep(number = "2", text = "点击【启动服务】显示悬浮球")
             GuideStep(number = "3", text = "点击悬浮球开始语音输入")
             GuideStep(number = "4", text = "说完后再次点击悬浮球")
             GuideStep(number = "5", text = "AI 将自动执行您的指令")
-            
+
             Spacer(modifier = Modifier.height(12.dp))
-            
+
             Text(
-                text = "💡 提示：安装 Shizuku 可获得截屏和更强的操作能力",
+                text = "💡 提示：安装 Shizuku 可获得截屏和更强的操作能力。",
                 style = MaterialTheme.typography.bodySmall,
-                color = Color(0xFF6366F1)
+                color = MaterialTheme.colorScheme.primary
             )
         }
     }
 }
+
+
 
 @Composable
 private fun GuideStep(number: String, text: String) {
@@ -683,12 +690,12 @@ private fun GuideStep(number: String, text: String) {
             modifier = Modifier
                 .size(24.dp)
                 .clip(CircleShape)
-                .background(Color(0xFF6366F1)),
+                .background(MaterialTheme.colorScheme.primary),
             contentAlignment = Alignment.Center
         ) {
             Text(
                 text = number,
-                color = Color.White,
+                color = MaterialTheme.colorScheme.onPrimary,
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Bold
             )
@@ -697,7 +704,8 @@ private fun GuideStep(number: String, text: String) {
         Text(
             text = text,
             style = MaterialTheme.typography.bodyMedium,
-            color = Color.White.copy(alpha = 0.8f)
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
         )
     }
 }
+

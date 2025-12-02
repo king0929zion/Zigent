@@ -388,29 +388,37 @@ class ActionDecider(
         
         val thought = reasoning ?: "执行: $functionName"
         val description = arguments.get("description")?.asString ?: functionName
+        fun missingParam(param: String) = AiDecision(
+            thought = "缺少必要参数: $param",
+            action = AgentAction(
+                type = ActionType.ASK_USER,
+                description = "需要补充信息",
+                question = "AI 生成的操作缺少参数 $param，请补充后重试。"
+            )
+        )
         
         val action = when (functionName) {
             // 点击
             "tap" -> AgentAction(
                 type = ActionType.TAP,
                 description = description,
-                x = arguments.get("x")?.asInt,
-                y = arguments.get("y")?.asInt
+                x = arguments.get("x")?.asInt ?: return missingParam("x"),
+                y = arguments.get("y")?.asInt ?: return missingParam("y")
             )
             
             "long_press" -> AgentAction(
                 type = ActionType.LONG_PRESS,
                 description = description,
-                x = arguments.get("x")?.asInt,
-                y = arguments.get("y")?.asInt,
+                x = arguments.get("x")?.asInt ?: return missingParam("x"),
+                y = arguments.get("y")?.asInt ?: return missingParam("y"),
                 duration = arguments.get("duration")?.asInt ?: 800
             )
             
             "double_tap" -> AgentAction(
                 type = ActionType.DOUBLE_TAP,
                 description = description,
-                x = arguments.get("x")?.asInt,
-                y = arguments.get("y")?.asInt
+                x = arguments.get("x")?.asInt ?: return missingParam("x"),
+                y = arguments.get("y")?.asInt ?: return missingParam("y")
             )
             
             // 滑动
@@ -441,10 +449,10 @@ class ActionDecider(
             "swipe" -> AgentAction(
                 type = ActionType.SWIPE,
                 description = description,
-                startX = arguments.get("start_x")?.asInt,
-                startY = arguments.get("start_y")?.asInt,
-                endX = arguments.get("end_x")?.asInt,
-                endY = arguments.get("end_y")?.asInt,
+                startX = arguments.get("start_x")?.asInt ?: return missingParam("start_x"),
+                startY = arguments.get("start_y")?.asInt ?: return missingParam("start_y"),
+                endX = arguments.get("end_x")?.asInt ?: return missingParam("end_x"),
+                endY = arguments.get("end_y")?.asInt ?: return missingParam("end_y"),
                 duration = arguments.get("duration")?.asInt ?: 300
             )
             
@@ -468,7 +476,7 @@ class ActionDecider(
             "input_text" -> AgentAction(
                 type = ActionType.INPUT_TEXT,
                 description = description,
-                text = arguments.get("text")?.asString ?: ""
+                text = arguments.get("text")?.asString ?: return missingParam("text")
             )
             
             "clear_text" -> AgentAction(
@@ -501,13 +509,13 @@ class ActionDecider(
             "open_app" -> AgentAction(
                 type = ActionType.OPEN_APP,
                 description = description,
-                appName = arguments.get("app")?.asString
+                appName = arguments.get("app")?.asString ?: return missingParam("app")
             )
             
             "close_app" -> AgentAction(
                 type = ActionType.CLOSE_APP,
                 description = description,
-                appName = arguments.get("app")?.asString
+                appName = arguments.get("app")?.asString ?: return missingParam("app")
             )
             
             // 视觉 - 需要调用 VLM
