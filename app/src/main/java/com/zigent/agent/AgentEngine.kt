@@ -390,13 +390,14 @@ class AgentEngine @Inject constructor(
         
         var stepCount = 0
         var consecutiveErrors = 0
+        val maxConsecutiveErrors = 3  // 最多允许3次连续错误
         var lastActionWasVlm = false  // 上一步是否是 VLM 调用
         var lastVlmError: String? = null  // 上次 VLM 调用失败的错误信息
         
-        // 检测连续相同操作
+        // 检测连续相同操作（需要失败才计数）
         var lastActionKey: String? = null  // 上一个操作的唯一标识
-        var sameActionCount = 0  // 连续相同操作计数
-        val maxSameActionRetries = 2  // 最多允许连续 2 次相同操作
+        var sameActionFailCount = 0  // 连续相同操作失败计数
+        val maxSameActionRetries = 3  // 最多允许连续 3 次相同操作失败
         
         while (stepCount < AiConfig.MAX_AGENT_STEPS) {
             // 检查是否被取消
@@ -444,27 +445,9 @@ class AgentEngine @Inject constructor(
             Logger.d("AI thought: ${decision.thought}", TAG)
             Logger.d("AI action: ${decision.action.type} - ${decision.action.description}", TAG)
             
-            // 检测连续相同操作
+            // 检测连续相同操作（只有失败时才计数）
             val currentActionKey = buildActionKey(decision.action)
-            if (currentActionKey == lastActionKey) {
-                sameActionCount++
-                Logger.w("Same action detected: $currentActionKey (count: $sameActionCount)", TAG)
-                
-                if (sameActionCount >= maxSameActionRetries) {
-                    Logger.e("Too many consecutive same actions ($sameActionCount), aborting", TAG)
-                    _state.value = AgentState.FAILED
-                    callback?.onStateChanged(AgentState.FAILED)
-                    callback?.onTaskFailed("AI 重复执行相同操作 $sameActionCount 次，任务终止。操作: ${decision.action.description}")
-                    delay(1000)
-                    _state.value = AgentState.IDLE
-                    callback?.onStateChanged(AgentState.IDLE)
-                    return
-                }
-            } else {
-                // 操作不同，重置计数
-                sameActionCount = 1
-                lastActionKey = currentActionKey
-            }
+            // 注：这里不立即检查，等执行后根据结果再判断
             
             // 3. 检查特殊操作类型
             when (decision.action.type) {
@@ -655,19 +638,47 @@ class AgentEngine @Inject constructor(
             // 7. 处理执行结果
             if (finalSuccess) {
                 consecutiveErrors = 0
+                // 成功后重置相同操作失败计数
+                sameActionFailCount = 0
+                lastActionKey = null
                 val message = verificationResult?.message ?: result.message
                 callback?.onStepCompleted(stepCount, true, message)
                 lastActionWasVlm = false  // 成功执行非 VLM 操作后重置
             } else {
                 consecutiveErrors++
+                
+                // 检查是否是相同操作失败
+                if (currentActionKey == lastActionKey) {
+                    sameActionFailCount++
+                    Logger.w("Same action failed again: $currentActionKey (fail count: $sameActionFailCount)", TAG)
+                    
+                    if (sameActionFailCount >= maxSameActionRetries) {
+                        Logger.e("Same action failed $sameActionFailCount times, aborting", TAG)
+                        _state.value = AgentState.FAILED
+                        callback?.onStateChanged(AgentState.FAILED)
+                        callback?.onTaskFailed("相同操作连续失败 $sameActionFailCount 次，任务终止。操作: ${decision.action.description}")
+                        delay(1000)
+                        _state.value = AgentState.IDLE
+                        callback?.onStateChanged(AgentState.IDLE)
+                        return
+                    }
+                } else {
+                    // 操作不同，重置计数
+                    sameActionFailCount = 1
+                    lastActionKey = currentActionKey
+                }
+                
                 callback?.onStepCompleted(stepCount, false, finalErrorMessage ?: "执行失败")
                 
                 // 连续错误过多则终止
-                if (consecutiveErrors >= 3) {
+                if (consecutiveErrors >= maxConsecutiveErrors) {
                     _state.value = AgentState.FAILED
                     callback?.onStateChanged(AgentState.FAILED)
-                    callback?.onTaskFailed("连续执行失败，任务终止")
-                    Logger.e("Too many consecutive errors, aborting", TAG)
+                    callback?.onTaskFailed("连续执行失败 $consecutiveErrors 次，任务终止")
+                    Logger.e("Too many consecutive errors ($consecutiveErrors), aborting", TAG)
+                    delay(1000)
+                    _state.value = AgentState.IDLE
+                    callback?.onStateChanged(AgentState.IDLE)
                     return
                 }
             }

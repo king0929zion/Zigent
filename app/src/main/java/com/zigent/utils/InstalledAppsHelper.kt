@@ -114,7 +114,7 @@ object InstalledAppsHelper {
     }
     
     /**
-     * 根据应用名查找包名
+     * 根据应用名查找包名（智能匹配）
      */
     fun findPackageByName(context: Context, appName: String): String? {
         val apps = getInstalledUserApps(context)
@@ -126,13 +126,39 @@ object InstalledAppsHelper {
             .replace("软件", "")
             .trim()
         
-        // 精确匹配
+        // 1. 精确匹配（完全相同）
         apps.find { it.name.lowercase() == nameLower }?.let { return it.packageName }
         
-        // 包含匹配
+        // 2. 别名匹配（最常见的别名）
+        val aliasMap = mapOf(
+            "谷歌笔记" to listOf("google keep", "keep", "keep记事本"),
+            "浏览器" to listOf("chrome", "browser", "谷歌浏览器"),
+            "油管" to listOf("youtube"),
+            "邮箱" to listOf("gmail", "email"),
+            "地图" to listOf("maps", "google maps", "谷歌地图"),
+            "翻译" to listOf("translate", "google translate", "谷歌翻译"),
+            "照相机" to listOf("camera", "相机"),
+            "图库" to listOf("photos", "gallery", "相册"),
+            "音乐" to listOf("music", "qqmusic", "网易云音乐"),
+            "视频" to listOf("video", "腾讯视频", "爱奇艺")
+        )
+        
+        for ((alias, targets) in aliasMap) {
+            if (nameLower.contains(alias) || alias.contains(nameLower)) {
+                for (target in targets) {
+                    apps.find { it.name.lowercase().contains(target) }?.let { return it.packageName }
+                }
+            }
+        }
+        
+        // 3. 包含匹配（应用名包含搜索词）
         apps.find { 
-            it.name.lowercase().contains(nameLower) || 
-            nameLower.contains(it.name.lowercase()) 
+            it.name.lowercase().contains(nameLower) 
+        }?.let { return it.packageName }
+        
+        // 4. 模糊匹配（搜索词包含应用名的任意部分）
+        apps.find { 
+            nameLower.contains(it.name.lowercase())
         }?.let { return it.packageName }
         
         return null
@@ -140,7 +166,7 @@ object InstalledAppsHelper {
     
     /**
      * 生成应用列表的文本描述（用于 AI 上下文）
-     * 直接提供应用名，AI 使用应用名即可打开
+     * 提供应用名和包名，帮助AI识别应用
      */
     fun generateAppsContext(context: Context): String {
         val apps = getInstalledUserApps(context)
@@ -151,23 +177,21 @@ object InstalledAppsHelper {
         
         val sb = StringBuilder()
         sb.appendLine("## 已安装应用列表（共 ${apps.size} 个）")
-        sb.appendLine("调用 open_app 时直接使用应用名即可，无需包名")
+        sb.appendLine("重要：调用 open_app 时必须使用下面列出的完整应用名称（第一列），包名仅供参考")
+        sb.appendLine("格式：应用名 | 包名")
         sb.appendLine()
         
-        // 只显示应用名，按拼音排序
-        apps.forEachIndexed { index, app ->
-            sb.append(app.name)
-            if (index < apps.size - 1) {
-                sb.append("、")
-            }
-            // 每10个应用换行
-            if ((index + 1) % 10 == 0) {
-                sb.appendLine()
-            }
+        // 提供应用名和包名，便于AI识别
+        apps.forEach { app ->
+            sb.appendLine("${app.name} | ${app.packageName}")
         }
-        if (apps.size % 10 != 0) {
-            sb.appendLine()
-        }
+        
+        sb.appendLine()
+        sb.appendLine("提示：")
+        sb.appendLine("- Google Keep = Keep记事本/Google Keep/记事本")
+        sb.appendLine("- Chrome = 谷歌浏览器/Chrome浏览器/Chrome")
+        sb.appendLine("- YouTube = 油管/YouTube")
+        sb.appendLine("- 使用列表中显示的确切应用名，如显示'Google Keep'就用'Google Keep'")
         
         return sb.toString()
     }
