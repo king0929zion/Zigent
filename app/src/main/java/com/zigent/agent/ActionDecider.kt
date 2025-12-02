@@ -43,6 +43,11 @@ class ActionDecider(
     // 设备上下文（已安装应用、初始屏幕状态等）
     private var deviceContext: DeviceContext? = null
     
+    // VLM 可用性状态
+    private var vlmAvailable = true
+    private var vlmFailureCount = 0
+    private val VLM_MAX_FAILURES = 3  // 连续失败 3 次后禁用 VLM
+    
     /**
      * 设备上下文信息
      */
@@ -113,12 +118,33 @@ class ActionDecider(
     ): AiDecision = decide(task, screenState, history)
 
     /**
+     * 检查 VLM 是否可用
+     */
+    fun isVlmAvailable(): Boolean = vlmAvailable
+    
+    /**
+     * 手动重置 VLM 可用状态
+     */
+    fun resetVlmAvailability() {
+        vlmAvailable = true
+        vlmFailureCount = 0
+        Logger.i("VLM availability reset", TAG)
+    }
+    
+    /**
      * 调用 VLM 获取屏幕描述
+     * 如果 VLM 不可用，返回 null 并提示 Agent 使用元素列表
      */
     suspend fun describeScreen(
         imageBase64: String?,
         context: String? = null
     ): String? = withContext(Dispatchers.IO) {
+        // 如果 VLM 已被禁用，返回降级提示
+        if (!vlmAvailable) {
+            Logger.w("VLM is disabled due to repeated failures, using element list only", TAG)
+            return@withContext "[VLM不可用] 视觉模型暂时无法使用，请仅根据屏幕元素列表进行操作决策。"
+        }
+        
         if (imageBase64.isNullOrEmpty()) {
             Logger.w("No screenshot available for VLM", TAG)
             return@withContext null
@@ -137,13 +163,25 @@ class ActionDecider(
         
         result.fold(
             onSuccess = { description ->
+                // VLM 调用成功，重置失败计数
+                vlmFailureCount = 0
                 lastScreenDescription = description
                 lastScreenDescriptionTime = now
                 Logger.i("VLM description obtained: ${description.take(200)}...", TAG)
                 description
             },
             onFailure = { error ->
-                Logger.e("VLM description failed", error, TAG)
+                // VLM 调用失败，增加失败计数
+                vlmFailureCount++
+                Logger.e("VLM description failed (failure count: $vlmFailureCount)", error, TAG)
+                
+                // 连续失败达到阈值，禁用 VLM
+                if (vlmFailureCount >= VLM_MAX_FAILURES) {
+                    vlmAvailable = false
+                    Logger.w("VLM disabled after $VLM_MAX_FAILURES consecutive failures", TAG)
+                    return@withContext "[VLM不可用] 视觉模型连续失败，已切换到仅元素列表模式。请根据屏幕元素信息进行操作。"
+                }
+                
                 null
             }
         )

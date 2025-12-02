@@ -45,6 +45,10 @@ class FloatingBallView(context: Context) : View(context) {
         
         // 呼吸动画配置
         private const val BREATH_DURATION = 2000L
+        
+        // 自动隐藏配置
+        private const val AUTO_HIDE_DELAY = 3000L  // 3秒无操作后隐藏
+        private const val HIDDEN_VISIBLE_RATIO = 0.35f  // 隐藏时露出的比例
     }
 
     // 悬浮球尺寸（像素）
@@ -105,6 +109,12 @@ class FloatingBallView(context: Context) : View(context) {
     // 回调
     var onClickListener: (() -> Unit)? = null
     
+    // 自动隐藏相关
+    private var isHidden = false
+    private var autoHideRunnable: Runnable? = null
+    var autoHideEnabled = true  // 是否启用自动隐藏
+    private var isOnLeftSide = true  // 悬浮球是否在左侧
+    
     init {
         // 设置视图尺寸
         minimumWidth = ballSizePx
@@ -156,6 +166,19 @@ class FloatingBallView(context: Context) : View(context) {
         
         Logger.d("State changed: $currentState -> $state", TAG)
         currentState = state
+        
+        // 状态变化时显示出来
+        if (isHidden) {
+            showFromEdge()
+        }
+        
+        // 非空闲状态取消自动隐藏
+        if (state != FloatingBallState.IDLE) {
+            cancelAutoHide()
+        } else {
+            // 恢复空闲状态后，开始自动隐藏计时
+            scheduleAutoHide()
+        }
         
         // 停止当前动画
         stopAllAnimations()
@@ -574,6 +597,15 @@ class FloatingBallView(context: Context) : View(context) {
     override fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.action) {
             MotionEvent.ACTION_DOWN -> {
+                // 如果隐藏状态，先显示出来
+                if (isHidden) {
+                    showFromEdge()
+                    return true
+                }
+                
+                // 取消自动隐藏
+                cancelAutoHide()
+                
                 lastTouchX = event.rawX
                 lastTouchY = event.rawY
                 initialX = layoutParams?.x ?: 0
@@ -642,7 +674,8 @@ class FloatingBallView(context: Context) : View(context) {
             val centerX = params.x + ballSizePx / 2
             
             // 判断靠近哪边
-            val targetX = if (centerX < screenWidth / 2) {
+            isOnLeftSide = centerX < screenWidth / 2
+            val targetX = if (isOnLeftSide) {
                 ballMarginPx
             } else {
                 screenWidth - ballSizePx - ballMarginPx
@@ -672,7 +705,123 @@ class FloatingBallView(context: Context) : View(context) {
                 }
                 start()
             }
+            
+            // 贴边后开始自动隐藏计时
+            isHidden = false
+            scheduleAutoHide()
         }
+    }
+    
+    /**
+     * 安排自动隐藏
+     */
+    private fun scheduleAutoHide() {
+        if (!autoHideEnabled) return
+        if (currentState != FloatingBallState.IDLE) return  // 非空闲状态不隐藏
+        
+        cancelAutoHide()
+        autoHideRunnable = Runnable {
+            hideToEdge()
+        }
+        postDelayed(autoHideRunnable, AUTO_HIDE_DELAY)
+    }
+    
+    /**
+     * 取消自动隐藏
+     */
+    private fun cancelAutoHide() {
+        autoHideRunnable?.let { removeCallbacks(it) }
+        autoHideRunnable = null
+    }
+    
+    /**
+     * 隐藏到边缘（只露出一部分）
+     */
+    private fun hideToEdge() {
+        if (isHidden) return
+        if (currentState != FloatingBallState.IDLE) return
+        
+        layoutParams?.let { params ->
+            val screenWidth = resources.displayMetrics.widthPixels
+            val hiddenOffset = (ballSizePx * (1 - HIDDEN_VISIBLE_RATIO)).toInt()
+            
+            val targetX = if (isOnLeftSide) {
+                -hiddenOffset
+            } else {
+                screenWidth - ballSizePx + hiddenOffset
+            }
+            
+            ValueAnimator.ofFloat(0f, 1f).apply {
+                duration = STICK_ANIMATION_DURATION
+                interpolator = AccelerateDecelerateInterpolator()
+                
+                val startX = params.x
+                
+                addUpdateListener { animator ->
+                    val progress = animator.animatedValue as Float
+                    params.x = (startX + (targetX - startX) * progress).toInt()
+                    windowManager?.updateViewLayout(this@FloatingBallView, params)
+                }
+                
+                doOnEnd {
+                    isHidden = true
+                    // 降低透明度
+                    animate().alpha(0.6f).setDuration(100).start()
+                }
+                start()
+            }
+        }
+    }
+    
+    /**
+     * 从边缘显示出来
+     */
+    fun showFromEdge() {
+        if (!isHidden) return
+        
+        // 恢复透明度
+        animate().alpha(1f).setDuration(100).start()
+        
+        layoutParams?.let { params ->
+            val screenWidth = resources.displayMetrics.widthPixels
+            
+            val targetX = if (isOnLeftSide) {
+                ballMarginPx
+            } else {
+                screenWidth - ballSizePx - ballMarginPx
+            }
+            
+            ValueAnimator.ofFloat(0f, 1f).apply {
+                duration = STICK_ANIMATION_DURATION
+                interpolator = AccelerateDecelerateInterpolator()
+                
+                val startX = params.x
+                
+                addUpdateListener { animator ->
+                    val progress = animator.animatedValue as Float
+                    params.x = (startX + (targetX - startX) * progress).toInt()
+                    windowManager?.updateViewLayout(this@FloatingBallView, params)
+                }
+                
+                doOnEnd {
+                    isHidden = false
+                    scheduleAutoHide()
+                }
+                start()
+            }
+        }
+    }
+    
+    /**
+     * 扩展方法：动画结束回调
+     */
+    private fun ValueAnimator.doOnEnd(action: () -> Unit) {
+        addListener(object : android.animation.Animator.AnimatorListener {
+            override fun onAnimationStart(animation: android.animation.Animator) {}
+            override fun onAnimationEnd(animation: android.animation.Animator) { action() }
+            override fun onAnimationCancel(animation: android.animation.Animator) {}
+            override fun onAnimationRepeat(animation: android.animation.Animator) {}
+        })
     }
 
     /**

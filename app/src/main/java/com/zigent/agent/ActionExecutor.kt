@@ -58,6 +58,11 @@ class ActionExecutor @Inject constructor(
         ShizukuManager.getInstance(context) 
     }
     
+    // 设置仓库（用于应用限制检查）
+    private val settingsRepository: com.zigent.data.SettingsRepository by lazy {
+        com.zigent.data.SettingsRepository(context)
+    }
+    
     // 缓存屏幕尺寸
     private var screenWidth = DEFAULT_SCREEN_WIDTH
     private var screenHeight = DEFAULT_SCREEN_HEIGHT
@@ -589,6 +594,15 @@ class ActionExecutor @Inject constructor(
         val packageName = action.packageName 
             ?: action.appName?.let { com.zigent.utils.AppUtils.getPackageName(it, context) }
             ?: return ExecutionResult(false, errorMessage = "未知的应用: ${action.appName}")
+        
+        // 检查应用是否在允许列表中
+        if (!settingsRepository.isAppAllowed(packageName)) {
+            Logger.w("App not allowed by restriction settings: $packageName", TAG)
+            return ExecutionResult(
+                false, 
+                errorMessage = "应用 ${action.appName ?: packageName} 已被限制操作"
+            )
+        }
         
         // 方法1：使用Intent启动（最可靠）
         try {

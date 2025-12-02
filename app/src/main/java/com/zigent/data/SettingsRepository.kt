@@ -41,6 +41,10 @@ class SettingsRepository @Inject constructor(
         // 通用设置键
         private val SPEECH_RATE = floatPreferencesKey("speech_rate")
         private val AUTO_START_SERVICE = booleanPreferencesKey("auto_start_service")
+        
+        // 应用限制设置
+        private val ALLOWED_APPS = stringPreferencesKey("allowed_apps")  // 允许操作的应用列表（JSON）
+        private val APP_RESTRICTION_MODE = stringPreferencesKey("app_restriction_mode")  // 限制模式
     }
 
     /**
@@ -130,5 +134,82 @@ class SettingsRepository @Inject constructor(
      */
     suspend fun clearAll() {
         context.dataStore.edit { it.clear() }
+    }
+    
+    // ==================== 应用限制设置 ====================
+    
+    /**
+     * 应用限制模式
+     */
+    enum class AppRestrictionMode {
+        ALLOW_ALL,    // 允许所有应用（默认）
+        WHITELIST,    // 白名单模式（仅允许列表中的应用）
+        BLACKLIST     // 黑名单模式（禁止列表中的应用）
+    }
+    
+    /**
+     * 应用限制设置
+     */
+    data class AppRestrictionSettings(
+        val mode: AppRestrictionMode = AppRestrictionMode.ALLOW_ALL,
+        val appList: Set<String> = emptySet()  // 包名列表
+    )
+    
+    /**
+     * 获取应用限制设置
+     */
+    val appRestrictionFlow: Flow<AppRestrictionSettings> = context.dataStore.data.map { prefs ->
+        val mode = try {
+            AppRestrictionMode.valueOf(prefs[APP_RESTRICTION_MODE] ?: AppRestrictionMode.ALLOW_ALL.name)
+        } catch (e: Exception) {
+            AppRestrictionMode.ALLOW_ALL
+        }
+        
+        val appsJson = prefs[ALLOWED_APPS] ?: "[]"
+        val appList = try {
+            com.google.gson.Gson().fromJson(appsJson, Array<String>::class.java).toSet()
+        } catch (e: Exception) {
+            emptySet()
+        }
+        
+        AppRestrictionSettings(mode, appList)
+    }
+    
+    /**
+     * 保存应用限制设置
+     */
+    suspend fun saveAppRestriction(settings: AppRestrictionSettings) {
+        context.dataStore.edit { prefs ->
+            prefs[APP_RESTRICTION_MODE] = settings.mode.name
+            prefs[ALLOWED_APPS] = com.google.gson.Gson().toJson(settings.appList.toTypedArray())
+        }
+    }
+    
+    /**
+     * 检查应用是否允许操作
+     */
+    suspend fun isAppAllowed(packageName: String): Boolean {
+        val settings = context.dataStore.data.map { prefs ->
+            val mode = try {
+                AppRestrictionMode.valueOf(prefs[APP_RESTRICTION_MODE] ?: AppRestrictionMode.ALLOW_ALL.name)
+            } catch (e: Exception) {
+                AppRestrictionMode.ALLOW_ALL
+            }
+            
+            val appsJson = prefs[ALLOWED_APPS] ?: "[]"
+            val appList = try {
+                com.google.gson.Gson().fromJson(appsJson, Array<String>::class.java).toSet()
+            } catch (e: Exception) {
+                emptySet<String>()
+            }
+            
+            when (mode) {
+                AppRestrictionMode.ALLOW_ALL -> true
+                AppRestrictionMode.WHITELIST -> packageName in appList
+                AppRestrictionMode.BLACKLIST -> packageName !in appList
+            }
+        }
+        
+        return kotlinx.coroutines.flow.first(settings)
     }
 }
