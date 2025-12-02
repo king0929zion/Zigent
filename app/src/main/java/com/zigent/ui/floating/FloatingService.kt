@@ -244,6 +244,7 @@ class FloatingService : Service() {
                     InteractionPhase.VOICE_INPUT -> FloatingBallState.LISTENING
                     InteractionPhase.AI_PROCESSING -> FloatingBallState.PROCESSING
                     InteractionPhase.TASK_EXECUTING -> FloatingBallState.EXECUTING
+                    InteractionPhase.WAITING_ANSWER -> FloatingBallState.PROCESSING  // 等待回答时显示为处理中
                     InteractionPhase.COMPLETED -> FloatingBallState.SUCCESS
                     InteractionPhase.ERROR -> FloatingBallState.ERROR
                 }
@@ -264,6 +265,11 @@ class FloatingService : Service() {
                         }
                         InteractionPhase.TASK_EXECUTING -> {
                             textPanel?.setExecutingMode()
+                        }
+                        InteractionPhase.WAITING_ANSWER -> {
+                            // 等待用户回答 AI 问题，显示面板
+                            showTextPanel()
+                            textPanel?.setProcessingMode()
                         }
                         InteractionPhase.COMPLETED -> {
                             // 面板保持显示完成状态一段时间
