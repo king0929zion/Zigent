@@ -120,18 +120,36 @@ class ActionDecider(
             val jsonObject = JsonParser.parseString(jsonStr).asJsonObject
             
             val thought = jsonObject.get("thought")?.asString ?: ""
+            
+            // 尝试多种方式获取 action
             val actionObj = jsonObject.getAsJsonObject("action")
+                ?: jsonObject // 如果没有 action 字段，可能整个就是 action
             
-            val action = parseAction(actionObj)
-            
-            return AiDecision(thought = thought, action = action)
+            if (actionObj != null) {
+                val action = parseAction(actionObj)
+                return AiDecision(thought = thought, action = action)
+            }
             
         } catch (e: Exception) {
-            Logger.e("Failed to parse AI response", e, TAG)
-            
-            // 尝试简单解析
-            return trySimpleParse(response)
+            Logger.e("Failed to parse AI response: ${e.message}", e, TAG)
         }
+        
+        // 尝试直接解析为 action JSON
+        try {
+            val jsonStr = extractJson(response)
+            val jsonObject = JsonParser.parseString(jsonStr).asJsonObject
+            
+            // 检查是否有 action 字段（表示这是一个 action 对象）
+            if (jsonObject.has("action") || jsonObject.has("type")) {
+                val action = parseAction(jsonObject)
+                return AiDecision(thought = "", action = action)
+            }
+        } catch (e: Exception) {
+            Logger.d("Direct action parse also failed", TAG)
+        }
+        
+        // 尝试简单解析
+        return trySimpleParse(response)
     }
 
     /**
@@ -432,40 +450,159 @@ class ActionDecider(
      */
     private fun trySimpleParse(response: String): AiDecision {
         val responseLower = response.lowercase()
+        Logger.d("Trying simple parse for: ${response.take(200)}", TAG)
         
         // 检查是否表示完成
-        if (responseLower.contains("finished") || responseLower.contains("完成") || responseLower.contains("成功")) {
+        if (responseLower.contains("finished") || 
+            responseLower.contains("完成") || 
+            responseLower.contains("成功") ||
+            responseLower.contains("已经完成")) {
             return AiDecision(
                 thought = response,
                 action = AgentAction(
                     type = ActionType.FINISHED,
                     description = "任务完成",
-                    resultMessage = "任务已完成"
+                    resultMessage = extractMessage(response) ?: "任务已完成"
+                )
+            )
+        }
+        
+        // 尝试从文本中提取操作
+        // 检查输入操作
+        val inputRegex = Regex("(?:输入|input|type)[：:\"']?\\s*[\"']?([^\"'\\n]+)[\"']?", RegexOption.IGNORE_CASE)
+        inputRegex.find(response)?.let { match ->
+            val text = match.groupValues[1].trim()
+            if (text.isNotEmpty()) {
+                Logger.d("Extracted input text: $text", TAG)
+                return AiDecision(
+                    thought = "需要输入文字",
+                    action = AgentAction(
+                        type = ActionType.INPUT_TEXT,
+                        description = "输入: $text",
+                        text = text
+                    )
+                )
+            }
+        }
+        
+        // 检查点击操作
+        val tapRegex = Regex("(?:点击|tap|click)[：:]?\\s*\\(?\\s*(\\d+)\\s*[,，]\\s*(\\d+)\\s*\\)?", RegexOption.IGNORE_CASE)
+        tapRegex.find(response)?.let { match ->
+            val x = match.groupValues[1].toIntOrNull()
+            val y = match.groupValues[2].toIntOrNull()
+            if (x != null && y != null) {
+                Logger.d("Extracted tap: ($x, $y)", TAG)
+                return AiDecision(
+                    thought = "需要点击",
+                    action = AgentAction(
+                        type = ActionType.TAP,
+                        description = "点击 ($x, $y)",
+                        x = x,
+                        y = y
+                    )
+                )
+            }
+        }
+        
+        // 检查返回操作
+        if (responseLower.contains("返回") || responseLower.contains("back")) {
+            return AiDecision(
+                thought = "需要返回",
+                action = AgentAction(
+                    type = ActionType.PRESS_BACK,
+                    description = "返回上一页"
+                )
+            )
+        }
+        
+        // 检查滑动操作
+        if (responseLower.contains("向下滑") || responseLower.contains("下滑") || responseLower.contains("scroll down")) {
+            return AiDecision(
+                thought = "需要向下滑动",
+                action = AgentAction(
+                    type = ActionType.SWIPE_DOWN,
+                    description = "向下滑动"
+                )
+            )
+        }
+        if (responseLower.contains("向上滑") || responseLower.contains("上滑") || responseLower.contains("scroll up")) {
+            return AiDecision(
+                thought = "需要向上滑动",
+                action = AgentAction(
+                    type = ActionType.SWIPE_UP,
+                    description = "向上滑动"
                 )
             )
         }
         
         // 检查是否表示失败
-        if (responseLower.contains("failed") || responseLower.contains("失败") || responseLower.contains("无法")) {
+        if (responseLower.contains("failed") || 
+            responseLower.contains("失败") || 
+            responseLower.contains("无法") ||
+            responseLower.contains("error")) {
             return AiDecision(
                 thought = response,
                 action = AgentAction(
                     type = ActionType.FAILED,
                     description = "任务失败",
-                    resultMessage = "无法完成任务"
+                    resultMessage = extractMessage(response) ?: "无法完成任务"
+                )
+            )
+        }
+        
+        // 检查是否需要等待
+        if (responseLower.contains("等待") || responseLower.contains("wait")) {
+            return AiDecision(
+                thought = "需要等待",
+                action = AgentAction(
+                    type = ActionType.WAIT,
+                    description = "等待页面加载",
+                    waitTime = 2000
+                )
+            )
+        }
+        
+        // 如果响应很短，可能是简单回复，当作完成处理
+        if (response.length < 50 && !responseLower.contains("json") && !responseLower.contains("{")) {
+            return AiDecision(
+                thought = response,
+                action = AgentAction(
+                    type = ActionType.FINISHED,
+                    description = "AI回复",
+                    resultMessage = response
                 )
             )
         }
         
         // 默认返回失败
+        Logger.w("Cannot parse response, returning failed", TAG)
         return AiDecision(
-            thought = "无法解析AI响应: $response",
+            thought = "无法解析AI响应",
             action = AgentAction(
                 type = ActionType.FAILED,
                 description = "解析失败",
-                resultMessage = "无法理解AI的响应"
+                resultMessage = "无法理解AI的响应，请重试"
             )
         )
+    }
+    
+    /**
+     * 从响应中提取消息
+     */
+    private fun extractMessage(response: String): String? {
+        // 尝试提取引号中的内容
+        val quoteRegex = Regex("[\"']([^\"']+)[\"']")
+        quoteRegex.find(response)?.let {
+            return it.groupValues[1]
+        }
+        
+        // 尝试提取冒号后的内容
+        val colonRegex = Regex("(?:message|消息|结果)[：:]\\s*(.+)")
+        colonRegex.find(response)?.let {
+            return it.groupValues[1].trim()
+        }
+        
+        return null
     }
 
     /**
