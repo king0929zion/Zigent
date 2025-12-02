@@ -369,10 +369,10 @@ class TaskDecomposer {
      */
     private fun extractKeyword(task: String): String {
         val patterns = listOf(
-            Regex("搜索[\""]?(.+?)[\""]?$"),
-            Regex("搜[\""]?(.+?)[\""]?$"),
-            Regex("找[\""]?(.+?)[\""]?$"),
-            Regex("查[\""]?(.+?)[\""]?$")
+            Regex("""搜索[""\u201c\u201d]?(.+?)[""\u201c\u201d]?$"""),
+            Regex("""搜[""\u201c\u201d]?(.+?)[""\u201c\u201d]?$"""),
+            Regex("""找[""\u201c\u201d]?(.+?)[""\u201c\u201d]?$"""),
+            Regex("""查[""\u201c\u201d]?(.+?)[""\u201c\u201d]?$""")
         )
         
         for (pattern in patterns) {
@@ -389,9 +389,9 @@ class TaskDecomposer {
      */
     private fun extractContent(task: String): String {
         val patterns = listOf(
-            Regex("(说|内容|消息)[：:](.+)$"),
-            Regex("发送[\""](.+?)[\""]"),
-            Regex("发[\""](.+?)[\""]")
+            Regex("""(说|内容|消息)[：:](.+)$"""),
+            Regex("""发送[""\u201c\u201d](.+?)[""\u201c\u201d]"""),
+            Regex("""发[""\u201c\u201d](.+?)[""\u201c\u201d]""")
         )
         
         for (pattern in patterns) {

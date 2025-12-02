@@ -218,13 +218,32 @@ class FloatingInteractionController(
             voiceManager.stopSpeaking()
         }
 
-        // 优先尝试优雅停止录音，等待引擎返回最终文本而不是直接取消
-        Logger.i("Stopping voice listening...", TAG)
+        // 检查是否已有识别到的文本（实时更新的）
+        val existingText = currentRecognizedText()
+        if (existingText.isNotBlank()) {
+            Logger.i("=== Using existing recognized text: $existingText ===", TAG)
+            // 停止录音但不等待，直接使用已有文本
+            voiceManager.cancelListening()
+            _recognizedText.value = existingText
+            callback?.onVoiceResult(existingText)
+            startAiProcessing(existingText)
+            return
+        }
+
+        // 没有已识别的文本，停止录音并等待识别结果
+        Logger.i("Stopping voice listening and waiting for recognition...", TAG)
+        
+        // 更新状态为识别中
+        _phase.value = InteractionPhase.AI_PROCESSING
+        callback?.onPhaseChanged(InteractionPhase.AI_PROCESSING)
+        callback?.onTaskProgress("正在识别语音...")
+        
         voiceManager.stopListening()
 
         scope.launch {
             Logger.d("Waiting for recognized text...", TAG)
-            val finalText = waitForRecognizedText()
+            // 增加超时时间到 10 秒，因为 API 调用需要时间
+            val finalText = waitForRecognizedText(timeoutMs = 10000L)
             Logger.i("waitForRecognizedText returned: '$finalText'", TAG)
 
             if (finalText.isNotBlank()) {
@@ -275,20 +294,54 @@ class FloatingInteractionController(
     /**
      * 等待语音识别结果，给最终文本一个短暂的落地时间
      */
-    private suspend fun waitForRecognizedText(timeoutMs: Long = 2000L): String {
+    private suspend fun waitForRecognizedText(timeoutMs: Long = 10000L): String {
         val existing = currentRecognizedText()
         if (existing.isNotBlank()) {
+            Logger.d("Found existing text: '$existing'", TAG)
             return existing
         }
 
-        // 等待新结果落地，超时后再回退检查一次
-        val awaited = withTimeoutOrNull(timeoutMs) {
-            voiceManager.lastRecognizedText
-                .filter { it.isNotBlank() }
-                .first()
-        } ?: ""
+        Logger.d("No existing text, waiting for recognition result (timeout: ${timeoutMs}ms)...", TAG)
+        
+        // 等待新结果落地，每 500ms 检查一次
+        val startTime = System.currentTimeMillis()
+        while (System.currentTimeMillis() - startTime < timeoutMs) {
+            // 检查是否有新文本
+            val text = voiceManager.lastRecognizedText.value
+            if (text.isNotBlank()) {
+                Logger.d("Got recognition result: '$text'", TAG)
+                return text
+            }
+            
+            // 检查本地缓存
+            val cached = _recognizedText.value
+            if (cached.isNotBlank()) {
+                Logger.d("Got cached result: '$cached'", TAG)
+                return cached
+            }
+            
+            // 检查识别是否完成（不再录音也不在上传）
+            val voiceState = voiceManager.state.value
+            if (voiceState == com.zigent.voice.VoiceInteractionState.IDLE ||
+                voiceState == com.zigent.voice.VoiceInteractionState.ERROR) {
+                // 识别已完成，最后再检查一次
+                delay(200)
+                val finalText = currentRecognizedText()
+                if (finalText.isNotBlank()) {
+                    Logger.d("Got final text after state change: '$finalText'", TAG)
+                    return finalText
+                }
+                Logger.d("Recognition ended with no result, state: $voiceState", TAG)
+                break
+            }
+            
+            delay(300)
+        }
 
-        return if (awaited.isNotBlank()) awaited else currentRecognizedText()
+        // 超时后最后检查一次
+        val finalCheck = currentRecognizedText()
+        Logger.d("Final check after timeout: '$finalCheck'", TAG)
+        return finalCheck
     }
 
     /**

@@ -98,8 +98,10 @@ class SiliconFlowSpeechRecognizer(private val context: Context) {
      */
     @SuppressLint("MissingPermission")
     fun startRecording() {
-        if (_state == SiliconFlowRecognitionState.RECORDING) {
-            Logger.w("Already recording", TAG)
+        // 防止重复录音
+        if (_state == SiliconFlowRecognitionState.RECORDING || 
+            _state == SiliconFlowRecognitionState.UPLOADING) {
+            Logger.w("Already recording or uploading, state: $_state", TAG)
             return
         }
         
@@ -110,6 +112,9 @@ class SiliconFlowSpeechRecognizer(private val context: Context) {
         }
         
         Logger.i("=== Starting recording ===", TAG)
+        
+        // 先清理之前的资源
+        cleanup()
         
         try {
             // 重置停止标志
@@ -144,19 +149,29 @@ class SiliconFlowSpeechRecognizer(private val context: Context) {
             // 记录开始时间
             recordingStartTime = System.currentTimeMillis()
             
-            // 开始录音
-            audioRecord?.startRecording()
+            // 先更新状态
             _state = SiliconFlowRecognitionState.RECORDING
             notifyStateChanged(_state)
+            
+            // 开始录音
+            try {
+                audioRecord?.startRecording()
+            } catch (e: IllegalStateException) {
+                Logger.e("Failed to start AudioRecord", e, TAG)
+                notifyError("录音启动失败")
+                cleanup()
+                return
+            }
             
             // 启动录音协程
             recordingJob = scope.launch {
                 try {
                     recordAudioLoop()
+                } catch (e: CancellationException) {
+                    Logger.d("Recording cancelled", TAG)
                 } catch (e: Exception) {
-                    if (e !is CancellationException) {
-                        Logger.e("Recording loop error", e, TAG)
-                    }
+                    Logger.e("Recording loop error", e, TAG)
+                    notifyError("录音出错: ${e.message}")
                 }
             }
             
@@ -477,13 +492,29 @@ class SiliconFlowSpeechRecognizer(private val context: Context) {
     private fun cleanup() {
         Logger.d("Cleaning up resources", TAG)
         
+        // 先取消录音任务
         try {
-            audioRecord?.release()
+            recordingJob?.cancel()
+        } catch (e: Exception) {
+            Logger.w("Error cancelling recording job", e, TAG)
+        }
+        recordingJob = null
+        
+        // 安全释放 AudioRecord
+        try {
+            val record = audioRecord
+            if (record != null) {
+                if (record.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
+                    record.stop()
+                }
+                record.release()
+            }
         } catch (e: Exception) {
             Logger.w("Error releasing AudioRecord", e, TAG)
         }
         audioRecord = null
         
+        // 删除临时文件
         try {
             recordingFile?.delete()
         } catch (e: Exception) {

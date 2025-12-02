@@ -154,15 +154,24 @@ class VoiceManager @Inject constructor(
 
             override fun onResult(text: String) {
                 Logger.i("=== SiliconFlow result: '$text' ===", TAG)
-                _lastRecognizedText.value = text
+                // 先更新文本，再更新状态，确保文本可用
+                if (text.isNotBlank()) {
+                    _lastRecognizedText.value = text
+                    Logger.i("Updated _lastRecognizedText to: '$text'", TAG)
+                    // 立即通知回调
+                    onRecognitionResult?.invoke(VoiceInteractionResult(true, text))
+                } else {
+                    Logger.w("SiliconFlow returned empty text", TAG)
+                    onRecognitionResult?.invoke(VoiceInteractionResult(false, errorMessage = "识别结果为空"))
+                }
                 _state.value = VoiceInteractionState.IDLE
-                onRecognitionResult?.invoke(VoiceInteractionResult(true, text))
             }
 
             override fun onError(message: String) {
                 Logger.e("SiliconFlow error: $message", null, TAG)
                 _state.value = VoiceInteractionState.ERROR
                 onRecognitionResult?.invoke(VoiceInteractionResult(false, errorMessage = message))
+                // 延迟重置状态，防止状态快速切换
                 _state.value = VoiceInteractionState.IDLE
             }
 
