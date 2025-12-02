@@ -9,6 +9,7 @@ import com.zigent.ai.AiProvider
 import com.zigent.ai.AiSettings
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -210,6 +211,6 @@ class SettingsRepository @Inject constructor(
             }
         }
         
-        return kotlinx.coroutines.flow.first(settings)
+        return settings.first()
     }
 }
