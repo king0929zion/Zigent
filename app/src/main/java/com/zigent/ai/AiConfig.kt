@@ -46,8 +46,8 @@ object AiConfig {
     // ==================== 硅基流动配置 ====================
     const val SILICONFLOW_BASE_URL = "https://api.siliconflow.cn/v1"
     
-    // 主 LLM 模型（默认 GLM-4.6，支持 Function Calling）
-    const val SILICONFLOW_LLM_MODEL = "zai-org/GLM-4.6"
+    // 主 LLM 模型（默认 Qwen Next 80B）
+    const val SILICONFLOW_LLM_MODEL = "Qwen/Qwen3-Next-80B-A3B-Instruct"
     
     // 备选 LLM 模型
     const val SILICONFLOW_LLM_DEEPSEEK = "deepseek-ai/DeepSeek-V3.2-Exp"
@@ -60,9 +60,9 @@ object AiConfig {
     
     // 可选的 LLM 模型列表
     val SILICONFLOW_LLM_OPTIONS = listOf(
-        "zai-org/GLM-4.6" to "GLM-4.6 (推荐)",
+        "Qwen/Qwen3-Next-80B-A3B-Instruct" to "Qwen3 Next 80B (推荐)",
+        "zai-org/GLM-4.6" to "GLM-4.6",
         "deepseek-ai/DeepSeek-V3.2-Exp" to "DeepSeek V3.2",
-        "Qwen/Qwen3-Next-80B-A3B-Instruct" to "Qwen3 Next 80B",
         "Qwen/Qwen3-235B-A22B-Instruct" to "Qwen3 235B"
     )
     
@@ -108,20 +108,20 @@ data class AiSettings(
     // 硅基流动 API Key（必填，用于语音识别）
     val siliconFlowApiKey: String = "",
     
-    // Agent 模型提供商（默认豆包）
-    val provider: AiProvider = AiProvider.DOUBAO,
+    // Agent 模型提供商（默认硅基流动）
+    val provider: AiProvider = AiProvider.SILICONFLOW,
     
     // 当前 Agent 提供商的 API Key
     val apiKey: String = "",
     
     // API 地址
-    val baseUrl: String = AiConfig.DOUBAO_BASE_URL,
+    val baseUrl: String = AiConfig.SILICONFLOW_BASE_URL,
     
     // 主 LLM 模型
-    val model: String = AiConfig.DOUBAO_LLM_MODEL,
+    val model: String = AiConfig.SILICONFLOW_LLM_MODEL,
     
     // 辅助 VLM 模型
-    val visionModel: String = AiConfig.DOUBAO_VLM_MODEL,
+    val visionModel: String = AiConfig.SILICONFLOW_VLM_MODEL,
     
     val maxTokens: Int = AiConfig.MAX_TOKENS,
     val temperature: Float = AiConfig.TEMPERATURE

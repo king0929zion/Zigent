@@ -56,14 +56,14 @@ class SettingsRepository @Inject constructor(
         AiSettings(
             siliconFlowApiKey = prefs[SILICONFLOW_API_KEY] ?: "",
             provider = try {
-                AiProvider.valueOf(prefs[AI_PROVIDER] ?: AiProvider.DOUBAO.name)
+                AiProvider.valueOf(prefs[AI_PROVIDER] ?: AiProvider.SILICONFLOW.name)
             } catch (e: Exception) {
-                AiProvider.DOUBAO
+                AiProvider.SILICONFLOW
             },
             apiKey = prefs[AI_API_KEY] ?: "",
-            baseUrl = prefs[AI_BASE_URL] ?: AiConfig.DOUBAO_BASE_URL,
-            model = prefs[AI_MODEL] ?: AiConfig.DOUBAO_LLM_MODEL,
-            visionModel = prefs[AI_VISION_MODEL] ?: AiConfig.DOUBAO_VLM_MODEL,
+            baseUrl = prefs[AI_BASE_URL] ?: AiConfig.SILICONFLOW_BASE_URL,
+            model = prefs[AI_MODEL] ?: AiConfig.SILICONFLOW_LLM_MODEL,
+            visionModel = prefs[AI_VISION_MODEL] ?: AiConfig.SILICONFLOW_VLM_MODEL,
             maxTokens = prefs[AI_MAX_TOKENS] ?: AiConfig.MAX_TOKENS,
             temperature = prefs[AI_TEMPERATURE] ?: AiConfig.TEMPERATURE
         )
