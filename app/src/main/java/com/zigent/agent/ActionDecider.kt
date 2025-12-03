@@ -45,7 +45,7 @@ class ActionDecider(
     private var deviceContext: DeviceContext? = null
     
     // VLM 可用性状态
-    private var vlmAvailable = true
+    private var vlmAvailable = !aiSettings.isNativeVisionModel()  // 原生多模态则不再调用额外 VLM
     private var vlmFailureCount = 0
     private val VLM_MAX_FAILURES = 3  // 连续失败 3 次后禁用 VLM
     
@@ -138,7 +138,8 @@ class ActionDecider(
         val result = aiClient.chatWithTools(
             prompt = prompt,
             tools = AgentTools.ALL_TOOLS,
-            systemPrompt = AgentTools.SYSTEM_PROMPT
+            systemPrompt = AgentTools.SYSTEM_PROMPT,
+            imageBase64 = screenState.screenshotBase64.takeIf { aiSettings.isNativeVisionModel() }
         )
         
         result.fold(
@@ -190,6 +191,11 @@ class ActionDecider(
         imageBase64: String?,
         context: String? = null
     ): String? = withContext(Dispatchers.IO) {
+        if (aiSettings.isNativeVisionModel()) {
+            // 使用原生多模态模型，跳过额外 describe_screen
+            Logger.i("Native vision model in use, skip external describe_screen", TAG)
+            return@withContext null
+        }
         // 如果 VLM 已被禁用，返回降级提示
         if (!vlmAvailable) {
             Logger.w("VLM is disabled due to repeated failures, using element list only", TAG)

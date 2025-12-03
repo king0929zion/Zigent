@@ -154,16 +154,36 @@ class AiClient(private val settings: AiSettings) {
     suspend fun chatWithTools(
         prompt: String,
         tools: List<Tool>,
-        systemPrompt: String? = null
+        systemPrompt: String? = null,
+        imageBase64: String? = null
     ): Result<ToolCallResult> = withContext(Dispatchers.IO) {
         Logger.i("=== LLM Tool Call ===", TAG)
         
         try {
+            val isMultiModal = settings.isNativeVisionModel() && !imageBase64.isNullOrBlank()
+            val userMessage: Any = if (isMultiModal) {
+                mapOf(
+                    "role" to "user",
+                    "content" to listOf(
+                        mapOf("type" to "text", "text" to prompt),
+                        mapOf(
+                            "type" to "image_url",
+                            "image_url" to mapOf(
+                                "url" to "data:image/png;base64,$imageBase64",
+                                "detail" to "auto"
+                            )
+                        )
+                    )
+                )
+            } else {
+                mapOf("role" to "user", "content" to prompt)
+            }
+
             val messages = buildList<Any> {
                 if (!systemPrompt.isNullOrBlank()) {
                     add(mapOf("role" to "system", "content" to systemPrompt))
                 }
-                add(mapOf("role" to "user", "content" to prompt))
+                add(userMessage)
             }
             
             // 使用 LLM 模型（支持 Function Calling）
@@ -555,4 +575,3 @@ class AiClient(private val settings: AiSettings) {
         }
     }
 }
-
