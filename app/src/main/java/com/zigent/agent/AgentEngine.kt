@@ -466,8 +466,7 @@ class AgentEngine @Inject constructor(
             // 2. AI决策
             callback?.onProgress("第${stepCount}步: AI正在分析...")
 
-            // 如果没有元素且有截图，优先触发一次视觉描述补充上下文
-            if (screenState.uiElements.isEmpty() && actionDecider?.isVlmAvailable() == true && screenState.screenshotBase64 != null) {
+            val decision = if (screenState.uiElements.isEmpty() && actionDecider?.isVlmAvailable() == true && screenState.screenshotBase64 != null) {
                 val describeAction = AgentAction(
                     type = ActionType.DESCRIBE_SCREEN,
                     description = "元素为空，获取屏幕视觉描述",
@@ -483,16 +482,14 @@ class AgentEngine @Inject constructor(
                         success = true
                     )
                 )
-                // 直接交给决策层处理 DESCRIBE_SCREEN，让后续循环再次决策
-                return@withTimeoutOrNull describeAction.let {
-                    AiDecision(
-                        thought = "元素列表为空，优先使用视觉描述",
-                        action = it
-                    )
-                }
+                lastActionWasVlm = true
+                AiDecision(
+                    thought = "元素为空，先调用视觉描述后再决策",
+                    action = describeAction
+                )
+            } else {
+                makeDecision(task, screenState)
             }
-
-            val decision = makeDecision(task, screenState)
             
             Logger.d("AI thought: ${decision.thought}", TAG)
             Logger.d("AI action: ${decision.action.type} - ${decision.action.description}", TAG)
