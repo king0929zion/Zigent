@@ -12,9 +12,11 @@ import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
 import android.view.animation.AccelerateDecelerateInterpolator
+import android.view.animation.OvershootInterpolator
 import androidx.core.content.ContextCompat
 import com.zigent.R
 import com.zigent.utils.Logger
+import kotlin.math.min
 
 /**
  * 悬浮文字面板
@@ -40,7 +42,8 @@ class FloatingTextPanel(context: Context) : View(context) {
     // 尺寸（像素）
     private val density = resources.displayMetrics.density
     private val screenWidthPx = resources.displayMetrics.widthPixels
-    private val panelWidthPx = minOf(
+    private val screenHeightPx = resources.displayMetrics.heightPixels
+    private val panelWidthPx = min(
         (PANEL_WIDTH * density).toInt(),
         (screenWidthPx * 0.92f).toInt()
     )
@@ -86,12 +89,14 @@ class FloatingTextPanel(context: Context) : View(context) {
     // 动画
     private var showAnimator: ValueAnimator? = null
     private var currentAlpha = 0f
-    private val slideDistance = 12 * density
+    private val slideDistance = 14 * density
 
     init {
         // 设置初始透明
         alpha = 0f
         translationY = slideDistance
+        scaleX = 0.96f
+        scaleY = 0.96f
         // 阴影需要软件层
         setLayerType(LAYER_TYPE_SOFTWARE, backgroundPaint)
     }
@@ -109,7 +114,7 @@ class FloatingTextPanel(context: Context) : View(context) {
         
         return WindowManager.LayoutParams(
             panelWidthPx,
-            panelHeightPx,
+            WindowManager.LayoutParams.WRAP_CONTENT,
             type,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                     WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
@@ -147,11 +152,14 @@ class FloatingTextPanel(context: Context) : View(context) {
         showAnimator?.cancel()
         showAnimator = ValueAnimator.ofFloat(currentAlpha, 1f).apply {
             duration = ANIMATION_DURATION
-            interpolator = AccelerateDecelerateInterpolator()
+            interpolator = OvershootInterpolator(1.1f)
             addUpdateListener { animator ->
                 currentAlpha = animator.animatedValue as Float
                 alpha = currentAlpha
                 translationY = slideDistance * (1f - currentAlpha)
+                val scale = 0.96f + 0.04f * currentAlpha
+                scaleX = scale
+                scaleY = scale
             }
             start()
         }
@@ -175,6 +183,9 @@ class FloatingTextPanel(context: Context) : View(context) {
                 currentAlpha = animator.animatedValue as Float
                 alpha = currentAlpha
                 translationY = slideDistance * (1f - currentAlpha)
+                val scale = 0.96f + 0.04f * currentAlpha
+                scaleX = scale
+                scaleY = scale
                 if (currentAlpha == 0f) {
                     isVisible = false
                 }
@@ -255,7 +266,20 @@ class FloatingTextPanel(context: Context) : View(context) {
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        setMeasuredDimension(panelWidthPx, panelHeightPx)
+        val titleHeight = titlePaint.textSize
+        val hintHeight = if (currentHint.isNotEmpty()) hintPaint.textSize + paddingPx * 0.5f else 0f
+        val maxContentWidth = (panelWidthPx - paddingPx * 2).toFloat()
+        val lineHeight = textPaint.textSize + lineSpacingPx
+        val lines = if (currentText.isNotEmpty()) wrapText(currentText, maxContentWidth, textPaint) else emptyList()
+        val contentLines = if (lines.isEmpty() && currentText.isNotEmpty()) 1 else lines.size
+        val contentHeight = if (contentLines > 0) {
+            contentLines * lineHeight + paddingPx * 0.6f
+        } else 0f
+        val desiredHeight = (paddingPx * 2) + titleHeight + contentHeight + hintHeight
+        val maxHeight = (screenHeightPx * 0.4f).toInt()
+        val minHeight = (140 * density).toInt()
+        val finalHeight = desiredHeight.toInt().coerceIn(minHeight, maxHeight)
+        setMeasuredDimension(panelWidthPx, finalHeight)
     }
 
     override fun onDraw(canvas: Canvas) {

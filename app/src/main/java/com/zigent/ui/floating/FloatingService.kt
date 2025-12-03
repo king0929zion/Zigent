@@ -94,6 +94,9 @@ class FloatingService : Service() {
     // 悬浮文字面板
     private var textPanel: FloatingTextPanel? = null
     
+    // 屏幕呼吸光效
+    private var edgeGlowView: EdgeGlowOverlay? = null
+    
     // 当前状态
     private var currentState: FloatingBallState = FloatingBallState.IDLE
     
@@ -394,6 +397,9 @@ class FloatingService : Service() {
         } catch (e: Exception) {
             Logger.e("Failed to show floating ball", e, TAG)
         }
+        
+        // 同步显示边缘光效
+        showEdgeGlow()
     }
 
     /**
@@ -413,6 +419,7 @@ class FloatingService : Service() {
         
         // 同时隐藏文字面板
         hideTextPanel()
+        hideEdgeGlow()
     }
     
     /**
@@ -457,6 +464,38 @@ class FloatingService : Service() {
             }
         }
         textPanel = null
+    }
+    
+    /**
+     * 显示屏幕边缘呼吸光效
+     */
+    private fun showEdgeGlow() {
+        if (edgeGlowView != null) return
+        try {
+            edgeGlowView = EdgeGlowOverlay(this).apply {
+                val params = createLayoutParams()
+                attachToWindow(windowManager)
+                windowManager.addView(this, params)
+                start()
+            }
+        } catch (e: Exception) {
+            Logger.e("Failed to show edge glow", e, TAG)
+        }
+    }
+    
+    /**
+     * 隐藏屏幕边缘呼吸光效
+     */
+    private fun hideEdgeGlow() {
+        edgeGlowView?.let { view ->
+            try {
+                view.stop()
+                windowManager.removeView(view)
+            } catch (e: Exception) {
+                Logger.e("Failed to hide edge glow", e, TAG)
+            }
+        }
+        edgeGlowView = null
     }
 
     /**
