@@ -1,4 +1,4 @@
-package com.zigent.agent.models
+﻿package com.zigent.agent.models
 
 /**
  * Agent操作类型
@@ -143,7 +143,8 @@ data class UiElement(
     val bounds: ElementBounds,              // 边界
     val isClickable: Boolean,
     val isEditable: Boolean,
-    val isScrollable: Boolean
+    val isScrollable: Boolean,
+    val isFocused: Boolean = false          // 是否获得焦点
 )
 
 /**

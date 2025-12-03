@@ -128,7 +128,8 @@ class ScreenAnalyzer @Inject constructor(
                     ),
                     isClickable = node.isClickable,
                     isEditable = node.isEditable,
-                    isScrollable = node.isScrollable
+                    isScrollable = node.isScrollable,
+                    isFocused = node.isFocused
                 )
             }
     }
@@ -155,6 +156,7 @@ class ScreenAnalyzer @Inject constructor(
                     val clickable = parser.getAttributeValue(null, "clickable") == "true"
                     val editable = parser.getAttributeValue(null, "editable") == "true"
                     val scrollable = parser.getAttributeValue(null, "scrollable") == "true"
+                    val focused = parser.getAttributeValue(null, "focused") == "true"
                     
                     // 解析bounds: [left,top][right,bottom]
                     val bounds = parseBounds(boundsStr)
@@ -170,7 +172,8 @@ class ScreenAnalyzer @Inject constructor(
                                     bounds = bounds,
                                     isClickable = clickable,
                                     isEditable = editable,
-                                    isScrollable = scrollable
+                                    isScrollable = scrollable,
+                                    isFocused = focused
                                 )
                             )
                         }
