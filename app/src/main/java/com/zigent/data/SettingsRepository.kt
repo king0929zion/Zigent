@@ -27,8 +27,9 @@ class SettingsRepository @Inject constructor(
 ) {
     companion object {
         // AI设置键
-        private val AI_PROVIDER = stringPreferencesKey("ai_provider")
-        private val AI_API_KEY = stringPreferencesKey("ai_api_key")
+        private val SILICONFLOW_API_KEY = stringPreferencesKey("siliconflow_api_key")  // 硅基流动API Key（语音识别）
+        private val AI_PROVIDER = stringPreferencesKey("ai_provider")  // Agent提供商
+        private val AI_API_KEY = stringPreferencesKey("ai_api_key")  // Agent API Key
         private val AI_BASE_URL = stringPreferencesKey("ai_base_url")
         private val AI_MODEL = stringPreferencesKey("ai_model")
         private val AI_VISION_MODEL = stringPreferencesKey("ai_vision_model")  // VLM 模型
@@ -53,6 +54,7 @@ class SettingsRepository @Inject constructor(
      */
     val aiSettingsFlow: Flow<AiSettings> = context.dataStore.data.map { prefs ->
         AiSettings(
+            siliconFlowApiKey = prefs[SILICONFLOW_API_KEY] ?: "",
             provider = try {
                 AiProvider.valueOf(prefs[AI_PROVIDER] ?: AiProvider.DOUBAO.name)
             } catch (e: Exception) {
@@ -72,6 +74,7 @@ class SettingsRepository @Inject constructor(
      */
     suspend fun saveAiSettings(settings: AiSettings) {
         context.dataStore.edit { prefs ->
+            prefs[SILICONFLOW_API_KEY] = settings.siliconFlowApiKey
             prefs[AI_PROVIDER] = settings.provider.name
             prefs[AI_API_KEY] = settings.apiKey
             prefs[AI_BASE_URL] = settings.baseUrl

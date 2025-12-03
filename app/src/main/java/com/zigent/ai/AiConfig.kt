@@ -96,14 +96,54 @@ enum class AiProvider {
 
 /**
  * AI配置数据类
+ * 
+ * 配置说明：
+ * - siliconFlowApiKey: 硅基流动API Key（必填，用于语音识别）
+ * - provider: Agent模型提供商（豆包/硅基流动等）
+ * - apiKey: 当前选择的Agent提供商的API Key
  */
 data class AiSettings(
-    val provider: AiProvider = AiProvider.DOUBAO,  // 默认使用豆包
+    // 硅基流动 API Key（必填，用于语音识别）
+    val siliconFlowApiKey: String = "",
+    
+    // Agent 模型提供商（默认豆包）
+    val provider: AiProvider = AiProvider.DOUBAO,
+    
+    // 当前 Agent 提供商的 API Key
     val apiKey: String = "",
+    
+    // API 地址
     val baseUrl: String = AiConfig.DOUBAO_BASE_URL,
-    val model: String = AiConfig.DOUBAO_LLM_MODEL,  // 主 LLM 模型
-    val visionModel: String = AiConfig.DOUBAO_VLM_MODEL,  // 辅助 VLM 模型
+    
+    // 主 LLM 模型
+    val model: String = AiConfig.DOUBAO_LLM_MODEL,
+    
+    // 辅助 VLM 模型
+    val visionModel: String = AiConfig.DOUBAO_VLM_MODEL,
+    
     val maxTokens: Int = AiConfig.MAX_TOKENS,
     val temperature: Float = AiConfig.TEMPERATURE
-)
+) {
+    /**
+     * 检查语音识别是否可用（硅基流动API Key已配置）
+     */
+    fun isAsrAvailable(): Boolean = siliconFlowApiKey.isNotBlank()
+    
+    /**
+     * 检查Agent是否可用（当前提供商API Key已配置）
+     */
+    fun isAgentAvailable(): Boolean = apiKey.isNotBlank()
+    
+    /**
+     * 获取当前有效的Agent API Key
+     * 如果选择硅基流动作为Agent，优先使用Agent的apiKey，否则回退到siliconFlowApiKey
+     */
+    fun getEffectiveAgentApiKey(): String {
+        return if (provider == AiProvider.SILICONFLOW && apiKey.isBlank()) {
+            siliconFlowApiKey
+        } else {
+            apiKey
+        }
+    }
+}
 

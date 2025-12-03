@@ -164,16 +164,23 @@ class FloatingService : Service() {
             try {
                 // 加载AI设置
                 val aiSettings = settingsRepository.aiSettingsFlow.first()
-                if (aiSettings.apiKey.isNotBlank()) {
+                
+                // 配置语音识别器（使用硅基流动 API Key）
+                if (aiSettings.siliconFlowApiKey.isNotBlank()) {
+                    voiceManager.configureSiliconFlow(aiSettings.siliconFlowApiKey)
+                    Logger.i("Voice recognition configured with SiliconFlow", TAG)
+                } else {
+                    Logger.w("SiliconFlow API key not configured, voice recognition unavailable", TAG)
+                }
+                
+                // 配置 Agent（使用有效的 Agent API Key）
+                val effectiveApiKey = aiSettings.getEffectiveAgentApiKey()
+                if (effectiveApiKey.isNotBlank()) {
                     agentEngine.configureAi(aiSettings)
                     interactionController?.configureAi(aiSettings)
-                    
-                    // 配置语音识别器使用相同的API Key（硅基流动）
-                    voiceManager.configureSiliconFlow(aiSettings.apiKey)
-                    
-                    Logger.i("AI settings loaded: ${aiSettings.provider}", TAG)
+                    Logger.i("Agent configured: ${aiSettings.provider}", TAG)
                 } else {
-                    Logger.w("No API key configured", TAG)
+                    Logger.w("Agent API key not configured", TAG)
                 }
             } catch (e: Exception) {
                 Logger.e("Failed to load settings", e, TAG)

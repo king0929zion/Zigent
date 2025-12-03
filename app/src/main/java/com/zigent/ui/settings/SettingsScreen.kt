@@ -39,6 +39,11 @@ fun SettingsScreen(
     testResult: String? = null,
     onBack: () -> Unit
 ) {
+    // 硅基流动 API Key（语音识别必填）
+    var siliconFlowApiKey by remember { mutableStateOf(currentSettings.siliconFlowApiKey) }
+    var showSiliconFlowApiKey by remember { mutableStateOf(false) }
+    
+    // Agent 配置
     var provider by remember { mutableStateOf(currentSettings.provider) }
     var apiKey by remember { mutableStateOf(currentSettings.apiKey) }
     var baseUrl by remember { mutableStateOf(currentSettings.baseUrl) }
@@ -87,6 +92,110 @@ fun SettingsScreen(
             
             Spacer(modifier = Modifier.height(24.dp))
             
+            // ==================== 硅基流动配置（语音识别必填） ====================
+            Text(
+                text = "🎙️ 语音识别配置",
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color.White
+            )
+            
+            Spacer(modifier = Modifier.height(8.dp))
+            
+            Text(
+                text = "硅基流动 API 用于语音识别，必须配置",
+                fontSize = 12.sp,
+                color = Color(0xFF94A3B8)
+            )
+            
+            Spacer(modifier = Modifier.height(12.dp))
+            
+            // 硅基流动 API Key
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B))
+            ) {
+                Column(modifier = Modifier.padding(20.dp)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "硅基流动 API Key",
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = Color.White
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "必填",
+                            fontSize = 12.sp,
+                            color = Color(0xFFEF4444),
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    
+                    Spacer(modifier = Modifier.height(12.dp))
+                    
+                    OutlinedTextField(
+                        value = siliconFlowApiKey,
+                        onValueChange = { siliconFlowApiKey = it },
+                        placeholder = { Text("输入硅基流动 API Key", color = Color(0xFF64748B)) },
+                        modifier = Modifier.fillMaxWidth(),
+                        visualTransformation = if (showSiliconFlowApiKey) {
+                            VisualTransformation.None
+                        } else {
+                            PasswordVisualTransformation()
+                        },
+                        trailingIcon = {
+                            IconButton(onClick = { showSiliconFlowApiKey = !showSiliconFlowApiKey }) {
+                                Icon(
+                                    imageVector = if (showSiliconFlowApiKey) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                    contentDescription = if (showSiliconFlowApiKey) "隐藏" else "显示",
+                                    tint = Color(0xFF94A3B8)
+                                )
+                            }
+                        },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White,
+                            focusedBorderColor = if (siliconFlowApiKey.isBlank()) Color(0xFFEF4444) else Color(0xFF6366F1),
+                            unfocusedBorderColor = if (siliconFlowApiKey.isBlank()) Color(0xFFEF4444) else Color(0xFF475569),
+                            cursorColor = Color(0xFF6366F1)
+                        ),
+                        singleLine = true
+                    )
+                    
+                    Spacer(modifier = Modifier.height(8.dp))
+                    
+                    Text(
+                        text = "获取地址: https://cloud.siliconflow.cn",
+                        fontSize = 12.sp,
+                        color = Color(0xFF64748B)
+                    )
+                }
+            }
+            
+            Spacer(modifier = Modifier.height(24.dp))
+            
+            // ==================== Agent 模型配置 ====================
+            Text(
+                text = "🤖 Agent 模型配置",
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color.White
+            )
+            
+            Spacer(modifier = Modifier.height(8.dp))
+            
+            Text(
+                text = "选择 Agent 使用的大模型提供商",
+                fontSize = 12.sp,
+                color = Color(0xFF94A3B8)
+            )
+            
+            Spacer(modifier = Modifier.height(12.dp))
+            
             // AI提供商选择
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -95,7 +204,7 @@ fun SettingsScreen(
             ) {
                 Column(modifier = Modifier.padding(20.dp)) {
                     Text(
-                        text = "AI提供商",
+                        text = "Agent 提供商",
                         fontSize = 16.sp,
                         fontWeight = FontWeight.Medium,
                         color = Color.White
@@ -183,7 +292,7 @@ fun SettingsScreen(
             
             Spacer(modifier = Modifier.height(16.dp))
             
-            // API Key
+            // Agent API Key（如果选择硅基流动，可以复用上面的 API Key）
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(16.dp),
@@ -191,7 +300,7 @@ fun SettingsScreen(
             ) {
                 Column(modifier = Modifier.padding(20.dp)) {
                     Text(
-                        text = "API Key",
+                        text = if (provider == AiProvider.SILICONFLOW) "Agent API Key（可留空，将复用上方 API Key）" else "Agent API Key",
                         fontSize = 16.sp,
                         fontWeight = FontWeight.Medium,
                         color = Color.White
@@ -202,7 +311,12 @@ fun SettingsScreen(
                     OutlinedTextField(
                         value = apiKey,
                         onValueChange = { apiKey = it },
-                        placeholder = { Text("输入你的API Key", color = Color(0xFF64748B)) },
+                        placeholder = { 
+                            Text(
+                                if (provider == AiProvider.SILICONFLOW) "留空则复用硅基流动 API Key" else "输入你的 API Key", 
+                                color = Color(0xFF64748B)
+                            ) 
+                        },
                         modifier = Modifier.fillMaxWidth(),
                         visualTransformation = if (showApiKey) {
                             VisualTransformation.None
@@ -227,6 +341,15 @@ fun SettingsScreen(
                         ),
                         singleLine = true
                     )
+                    
+                    if (provider == AiProvider.SILICONFLOW && apiKey.isBlank()) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "ℹ️ 将使用上方的硅基流动 API Key",
+                            fontSize = 12.sp,
+                            color = Color(0xFF10B981)
+                        )
+                    }
                 }
             }
             
@@ -383,6 +506,7 @@ fun SettingsScreen(
                 onClick = {
                     onSaveSettings(
                         AiSettings(
+                            siliconFlowApiKey = siliconFlowApiKey,
                             provider = provider,
                             apiKey = apiKey,
                             baseUrl = when (provider) {
@@ -416,7 +540,10 @@ fun SettingsScreen(
                 colors = ButtonDefaults.buttonColors(
                     containerColor = Color(0xFF334155)
                 ),
-                enabled = apiKey.isNotBlank() && !isTestingConnection
+                // 硅基流动 API Key 必填，Agent API Key 可选（如果是硅基流动则复用）
+                enabled = siliconFlowApiKey.isNotBlank() && 
+                         (apiKey.isNotBlank() || provider == AiProvider.SILICONFLOW) && 
+                         !isTestingConnection
             ) {
                 if (isTestingConnection) {
                     CircularProgressIndicator(
@@ -449,6 +576,7 @@ fun SettingsScreen(
                 onClick = {
                     onSaveSettings(
                         AiSettings(
+                            siliconFlowApiKey = siliconFlowApiKey,
                             provider = provider,
                             apiKey = apiKey,
                             baseUrl = when (provider) {
@@ -482,7 +610,9 @@ fun SettingsScreen(
                 colors = ButtonDefaults.buttonColors(
                     containerColor = Color(0xFF6366F1)
                 ),
-                enabled = apiKey.isNotBlank()
+                // 硅基流动 API Key 必填，Agent API Key 可选（如果是硅基流动则复用）
+                enabled = siliconFlowApiKey.isNotBlank() && 
+                         (apiKey.isNotBlank() || provider == AiProvider.SILICONFLOW)
             ) {
                 Icon(
                     imageVector = Icons.Default.Save,

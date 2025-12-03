@@ -101,7 +101,7 @@ class MainActivity : ComponentActivity() {
     private fun refreshStatus() {
         lifecycleScope.launch {
             val aiSettings = settingsRepository.aiSettingsFlow.first()
-            serviceManager.refreshStatus(aiSettings.apiKey.isNotBlank())
+            serviceManager.refreshStatus(aiSettings.isAsrAvailable() && aiSettings.isAgentAvailable())
         }
     }
 
@@ -110,19 +110,14 @@ class MainActivity : ComponentActivity() {
         val navController = rememberNavController()
         val status by serviceManager.status.collectAsState()
         var currentAiSettings by remember { 
-            mutableStateOf(AiSettings(
-                provider = AiProvider.SILICONFLOW,
-                apiKey = "",
-                baseUrl = AiConfig.SILICONFLOW_BASE_URL,
-                model = AiConfig.SILICONFLOW_MODEL
-            ))
+            mutableStateOf(AiSettings())
         }
         
         // 加载保存的AI设置
         LaunchedEffect(Unit) {
             settingsRepository.aiSettingsFlow.collect { settings ->
                 currentAiSettings = settings
-                serviceManager.refreshStatus(settings.apiKey.isNotBlank())
+                serviceManager.refreshStatus(settings.isAsrAvailable() && settings.isAgentAvailable())
             }
         }
         
