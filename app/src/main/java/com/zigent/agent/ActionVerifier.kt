@@ -12,12 +12,45 @@ data class VerificationResult(
     val success: Boolean,           // 验证是否通过
     val message: String,            // 验证消息
     val confidence: Float = 1.0f,   // 置信度 (0-1)
-    val suggestion: String? = null  // 如果失败,给出建议
+    val suggestion: String? = null, // 如果失败,给出建议
+    val retryAction: RetryAction? = null,  // 建议的重试操作
+    val canContinue: Boolean = true // 是否可以继续执行后续步骤
 )
 
 /**
+ * 重试操作建议
+ */
+data class RetryAction(
+    val type: RetryType,             // 重试类型
+    val adjustedAction: AgentAction? = null,  // 调整后的操作
+    val waitTime: Long = 0,          // 重试前等待时间
+    val reason: String               // 重试原因
+)
+
+/**
+ * 重试类型
+ */
+enum class RetryType {
+    RETRY_SAME,       // 重试相同操作
+    RETRY_ADJUSTED,   // 使用调整后的操作重试
+    WAIT_AND_RETRY,   // 等待后重试
+    SCROLL_AND_RETRY, // 滚动后重试
+    FALLBACK,         // 使用备选方案
+    SKIP,             // 跳过当前步骤
+    ABORT             // 终止任务
+}
+
+/**
+ * 操作确认回调
+ */
+interface OperationConfirmationCallback {
+    fun onConfirmationRequired(action: AgentAction, reason: String, onConfirm: () -> Unit, onCancel: () -> Unit)
+    fun onOperationFeedback(result: VerificationResult)
+}
+
+/**
  * 操作验证器
- * 验证执行的操作是否达到预期效果
+ * 验证执行的操作是否达到预期效果，并提供智能重试建议
  */
 class ActionVerifier(
     private val context: Context? = null
@@ -28,23 +61,45 @@ class ActionVerifier(
         
         // 验证阈值
         private const val MIN_STATE_CHANGE_THRESHOLD = 0.1f  // 最小状态变化阈值
+        
+        // 坐标调整参数
+        private const val COORDINATE_ADJUST_OFFSET = 20  // 坐标微调偏移量
+        private const val MAX_RETRY_ATTEMPTS = 3         // 最大重试次数
     }
+    
+    // 操作历史（用于检测重复失败）
+    private val recentFailures = mutableListOf<FailedOperation>()
+    private val MAX_FAILURE_HISTORY = 10
+    
+    // 确认回调
+    var confirmationCallback: OperationConfirmationCallback? = null
+    
+    /**
+     * 失败操作记录
+     */
+    private data class FailedOperation(
+        val actionType: ActionType,
+        val coordinates: Pair<Int, Int>?,
+        val timestamp: Long = System.currentTimeMillis()
+    )
     
     /**
      * 验证操作执行结果
      * @param action 执行的操作
      * @param beforeState 执行前的屏幕状态
      * @param afterState 执行后的屏幕状态
+     * @param planStep 当前规划步骤（可选）
      * @return 验证结果
      */
     fun verify(
         action: AgentAction,
         beforeState: ScreenState,
-        afterState: ScreenState
+        afterState: ScreenState,
+        planStep: PlanStep? = null
     ): VerificationResult {
         Logger.d("Verifying action: ${action.type} - ${action.description}", TAG)
         
-        return when (action.type) {
+        val baseResult = when (action.type) {
             // 应用操作验证
             ActionType.OPEN_APP -> verifyOpenApp(action, afterState)
             ActionType.CLOSE_APP -> verifyCloseApp(action, beforeState, afterState)
@@ -78,6 +133,378 @@ class ActionVerifier(
             // 其他操作 - 检查状态是否有变化
             else -> verifyStateChanged(beforeState, afterState)
         }
+        
+        // 如果验证失败，生成重试建议
+        val result = if (!baseResult.success) {
+            enhanceWithRetryAction(baseResult, action, beforeState, afterState, planStep)
+        } else {
+            baseResult
+        }
+        
+        // 记录失败操作
+        if (!result.success) {
+            recordFailure(action)
+        }
+        
+        // 通知回调
+        confirmationCallback?.onOperationFeedback(result)
+        
+        return result
+    }
+    
+    /**
+     * 验证规划步骤是否完成
+     */
+    fun verifyPlanStep(
+        planStep: PlanStep,
+        beforeState: ScreenState,
+        afterState: ScreenState
+    ): VerificationResult {
+        Logger.d("Verifying plan step: ${planStep.description}", TAG)
+        
+        // 检查验证条件
+        val verification = planStep.verification ?: return VerificationResult(
+            success = true,
+            message = "步骤已执行（无验证条件）",
+            confidence = 0.7f
+        )
+        
+        // 根据验证条件检查
+        val verificationLower = verification.lowercase()
+        
+        return when {
+            // 检查应用是否打开
+            verificationLower.contains("应用已打开") || verificationLower.contains("app opened") -> {
+                val targetApp = planStep.targetElement ?: ""
+                verifyAppOpened(targetApp, afterState)
+            }
+            
+            // 检查元素是否存在
+            verificationLower.contains("出现") || verificationLower.contains("显示") -> {
+                val targetText = extractTargetFromVerification(verification)
+                verifyElementExists(targetText, afterState)
+            }
+            
+            // 检查输入框是否激活
+            verificationLower.contains("激活") || verificationLower.contains("聚焦") -> {
+                verifyInputFocused(afterState)
+            }
+            
+            // 检查内容是否输入
+            verificationLower.contains("已输入") || verificationLower.contains("输入完成") -> {
+                val expectedText = planStep.inputData ?: ""
+                verifyTextEntered(expectedText, afterState)
+            }
+            
+            // 检查页面是否变化
+            verificationLower.contains("页面") || verificationLower.contains("界面") -> {
+                verifyPageChanged(beforeState, afterState)
+            }
+            
+            // 通用状态变化检查
+            else -> verifyStateChanged(beforeState, afterState)
+        }
+    }
+    
+    /**
+     * 增强验证结果，添加重试建议
+     */
+    private fun enhanceWithRetryAction(
+        result: VerificationResult,
+        action: AgentAction,
+        beforeState: ScreenState,
+        afterState: ScreenState,
+        planStep: PlanStep?
+    ): VerificationResult {
+        val retryAction = generateRetryAction(action, beforeState, afterState, planStep)
+        
+        return result.copy(
+            retryAction = retryAction,
+            canContinue = retryAction.type != RetryType.ABORT
+        )
+    }
+    
+    /**
+     * 生成重试操作建议
+     */
+    private fun generateRetryAction(
+        action: AgentAction,
+        beforeState: ScreenState,
+        afterState: ScreenState,
+        planStep: PlanStep?
+    ): RetryAction {
+        // 检查是否有重复失败
+        val failureCount = countRecentFailures(action)
+        
+        if (failureCount >= MAX_RETRY_ATTEMPTS) {
+            // 尝试使用备选方案
+            planStep?.fallback?.let {
+                return RetryAction(
+                    type = RetryType.FALLBACK,
+                    reason = "操作连续失败 $failureCount 次，尝试备选方案: $it"
+                )
+            }
+            
+            // 如果是可选步骤，跳过
+            if (planStep?.isOptional == true) {
+                return RetryAction(
+                    type = RetryType.SKIP,
+                    reason = "可选步骤失败，跳过继续"
+                )
+            }
+            
+            // 终止
+            return RetryAction(
+                type = RetryType.ABORT,
+                reason = "操作连续失败 $failureCount 次，无法继续"
+            )
+        }
+        
+        // 根据操作类型生成重试建议
+        return when (action.type) {
+            ActionType.TAP, ActionType.LONG_PRESS, ActionType.DOUBLE_TAP -> {
+                // 尝试调整坐标
+                val adjustedAction = adjustCoordinates(action, failureCount)
+                if (adjustedAction != null) {
+                    RetryAction(
+                        type = RetryType.RETRY_ADJUSTED,
+                        adjustedAction = adjustedAction,
+                        reason = "调整点击坐标后重试"
+                    )
+                } else {
+                    // 可能元素不在屏幕上，尝试滚动
+                    RetryAction(
+                        type = RetryType.SCROLL_AND_RETRY,
+                        waitTime = 500,
+                        reason = "元素可能不在可见区域，尝试滚动后重试"
+                    )
+                }
+            }
+            
+            ActionType.INPUT_TEXT -> {
+                // 输入失败，可能需要先点击聚焦
+                RetryAction(
+                    type = RetryType.WAIT_AND_RETRY,
+                    waitTime = 1000,
+                    reason = "等待输入框聚焦后重试"
+                )
+            }
+            
+            ActionType.OPEN_APP -> {
+                // 应用打开失败，等待后重试
+                RetryAction(
+                    type = RetryType.WAIT_AND_RETRY,
+                    waitTime = 2000,
+                    reason = "应用启动中，等待后重试"
+                )
+            }
+            
+            ActionType.SWIPE_UP, ActionType.SWIPE_DOWN,
+            ActionType.SWIPE_LEFT, ActionType.SWIPE_RIGHT -> {
+                // 滑动可能已到边界，重试同样操作
+                RetryAction(
+                    type = RetryType.RETRY_SAME,
+                    reason = "可能已到边界，重试滑动"
+                )
+            }
+            
+            else -> {
+                RetryAction(
+                    type = RetryType.WAIT_AND_RETRY,
+                    waitTime = 500,
+                    reason = "等待页面响应后重试"
+                )
+            }
+        }
+    }
+    
+    /**
+     * 调整点击坐标
+     */
+    private fun adjustCoordinates(action: AgentAction, attemptCount: Int): AgentAction? {
+        val x = action.x ?: return null
+        val y = action.y ?: return null
+        
+        // 根据失败次数调整坐标方向
+        val adjustX = when (attemptCount % 4) {
+            0 -> COORDINATE_ADJUST_OFFSET
+            1 -> -COORDINATE_ADJUST_OFFSET
+            2 -> 0
+            else -> 0
+        }
+        val adjustY = when (attemptCount % 4) {
+            0 -> 0
+            1 -> 0
+            2 -> COORDINATE_ADJUST_OFFSET
+            else -> -COORDINATE_ADJUST_OFFSET
+        }
+        
+        return action.copy(
+            x = x + adjustX,
+            y = y + adjustY,
+            description = "${action.description} (坐标调整)"
+        )
+    }
+    
+    /**
+     * 记录失败操作
+     */
+    private fun recordFailure(action: AgentAction) {
+        val failure = FailedOperation(
+            actionType = action.type,
+            coordinates = if (action.x != null && action.y != null) {
+                Pair(action.x, action.y)
+            } else null
+        )
+        
+        recentFailures.add(failure)
+        
+        // 限制历史大小
+        while (recentFailures.size > MAX_FAILURE_HISTORY) {
+            recentFailures.removeAt(0)
+        }
+    }
+    
+    /**
+     * 统计最近相同操作的失败次数
+     */
+    private fun countRecentFailures(action: AgentAction): Int {
+        val now = System.currentTimeMillis()
+        val recentWindow = 30_000L  // 30秒内
+        
+        return recentFailures.count { failure ->
+            failure.actionType == action.type &&
+            (now - failure.timestamp) < recentWindow &&
+            (failure.coordinates == null || 
+             (action.x != null && action.y != null &&
+              kotlin.math.abs(failure.coordinates.first - action.x) < 50 &&
+              kotlin.math.abs(failure.coordinates.second - action.y) < 50))
+        }
+    }
+    
+    /**
+     * 验证应用是否打开
+     */
+    private fun verifyAppOpened(appName: String, afterState: ScreenState): VerificationResult {
+        val currentPackage = afterState.packageName.lowercase()
+        val targetLower = appName.lowercase()
+        
+        if (currentPackage.contains(targetLower) || targetLower.contains(currentPackage)) {
+            return VerificationResult(true, "应用已打开: $appName")
+        }
+        
+        return VerificationResult(
+            success = false,
+            message = "应用未打开",
+            suggestion = "当前在: ${afterState.packageName}"
+        )
+    }
+    
+    /**
+     * 验证元素是否存在
+     */
+    private fun verifyElementExists(targetText: String, afterState: ScreenState): VerificationResult {
+        if (targetText.isEmpty()) {
+            return VerificationResult(true, "无具体目标元素", confidence = 0.6f)
+        }
+        
+        val found = afterState.uiElements.any { elem ->
+            elem.text.contains(targetText, ignoreCase = true) ||
+            elem.description.contains(targetText, ignoreCase = true)
+        }
+        
+        return if (found) {
+            VerificationResult(true, "找到目标元素: $targetText")
+        } else {
+            VerificationResult(
+                success = false,
+                message = "未找到目标元素: $targetText",
+                suggestion = "尝试滚动查找"
+            )
+        }
+    }
+    
+    /**
+     * 验证输入框是否聚焦
+     */
+    private fun verifyInputFocused(afterState: ScreenState): VerificationResult {
+        val focusedInput = afterState.uiElements.any { it.isEditable && it.isFocused }
+        
+        return if (focusedInput) {
+            VerificationResult(true, "输入框已激活")
+        } else {
+            VerificationResult(
+                success = false,
+                message = "输入框未激活",
+                suggestion = "尝试点击输入框"
+            )
+        }
+    }
+    
+    /**
+     * 验证文字是否输入
+     */
+    private fun verifyTextEntered(expectedText: String, afterState: ScreenState): VerificationResult {
+        if (expectedText.isEmpty()) {
+            return VerificationResult(true, "无预期输入内容", confidence = 0.6f)
+        }
+        
+        val found = afterState.uiElements.any { elem ->
+            elem.text.contains(expectedText)
+        }
+        
+        return if (found) {
+            VerificationResult(true, "文字已输入")
+        } else {
+            VerificationResult(
+                success = false,
+                message = "未检测到输入的文字",
+                suggestion = "确保输入框已聚焦"
+            )
+        }
+    }
+    
+    /**
+     * 验证页面是否变化
+     */
+    private fun verifyPageChanged(beforeState: ScreenState, afterState: ScreenState): VerificationResult {
+        if (beforeState.activityName != afterState.activityName ||
+            beforeState.packageName != afterState.packageName) {
+            return VerificationResult(true, "页面已切换")
+        }
+        
+        return VerificationResult(
+            success = false,
+            message = "页面未变化",
+            confidence = 0.5f
+        )
+    }
+    
+    /**
+     * 从验证条件中提取目标
+     */
+    private fun extractTargetFromVerification(verification: String): String {
+        val patterns = listOf(
+            Regex("出现[""']?([^""']+)[""']?"),
+            Regex("显示[""']?([^""']+)[""']?"),
+            Regex("找到[""']?([^""']+)[""']?")
+        )
+        
+        for (pattern in patterns) {
+            val match = pattern.find(verification)
+            if (match != null) {
+                return match.groupValues[1].trim()
+            }
+        }
+        return ""
+    }
+    
+    /**
+     * 清除失败历史
+     */
+    fun clearFailureHistory() {
+        recentFailures.clear()
+        Logger.d("Failure history cleared", TAG)
     }
     
     /**

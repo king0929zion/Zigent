@@ -55,6 +55,12 @@ class ActionDecider(
     // 当前输入框焦点状态
     private var hasInputFocus: Boolean = false
     
+    // 对话记忆上下文（由 AgentEngine 设置）
+    private var conversationContext: String? = null
+    
+    // 长期记忆上下文
+    private var longTermContext: String? = null
+    
     /**
      * 设备上下文信息
      */
@@ -89,7 +95,23 @@ class ActionDecider(
         hasInputFocus = false
         lastScreenDescription = null
         lastScreenDescriptionTime = 0
+        conversationContext = null
+        longTermContext = null
         Logger.d("Tool context reset", TAG)
+    }
+    
+    /**
+     * 设置对话记忆上下文
+     */
+    fun setConversationContext(context: String?) {
+        conversationContext = context
+    }
+    
+    /**
+     * 设置长期记忆上下文
+     */
+    fun setLongTermContext(context: String?) {
+        longTermContext = context
     }
 
     /**
@@ -289,6 +311,7 @@ class ActionDecider(
 
     /**
      * 构建提示词
+     * 增强版：集成对话记忆和长期记忆上下文
      */
     private fun buildPrompt(
         task: String,
@@ -298,6 +321,18 @@ class ActionDecider(
         planSteps: List<String>?
     ): String {
         val sb = StringBuilder()
+        
+        // 对话记忆上下文（多轮对话支持）
+        conversationContext?.takeIf { it.isNotBlank() }?.let { context ->
+            sb.appendLine(context)
+            sb.appendLine()
+        }
+        
+        // 长期记忆上下文（用户偏好、历史任务）
+        longTermContext?.takeIf { it.isNotBlank() }?.let { context ->
+            sb.appendLine(context)
+            sb.appendLine()
+        }
         
         // 设备上下文（首次执行时的应用列表和初始屏幕）
         deviceContext?.let { ctx ->
@@ -328,19 +363,31 @@ class ActionDecider(
         }
         sb.appendLine()
         
-        // 任务规划（若已有）
+        // 任务规划（若已有）- 帮助 AI 保持任务上下文，减少遗忘
         if (!planSteps.isNullOrEmpty()) {
-            sb.appendLine("## 任务规划")
+            sb.appendLine("## 任务规划（请严格按照此规划执行）")
             val finishedCount = history.size
+            var currentStepDesc = ""
             planSteps.forEachIndexed { index, step ->
                 val marker = when {
-                    index < finishedCount -> "✔ 已完成"
-                    index == finishedCount -> "➡ 下一步"
-                    else -> "· 待执行"
+                    index < finishedCount -> "✔"
+                    index == finishedCount -> {
+                        currentStepDesc = step
+                        "➡"
+                    }
+                    else -> "○"
                 }
                 sb.appendLine("$marker ${index + 1}. $step")
             }
             sb.appendLine()
+            
+            // 突出当前步骤
+            if (currentStepDesc.isNotEmpty()) {
+                sb.appendLine("## 当前必须执行的步骤")
+                sb.appendLine("【$currentStepDesc】")
+                sb.appendLine("请根据屏幕元素，执行上述步骤。")
+                sb.appendLine()
+            }
         }
         
         // 屏幕元素列表（主要信息源）
@@ -425,7 +472,14 @@ class ActionDecider(
         sb.appendLine("注意事项：")
         sb.appendLine("- 使用屏幕元素列表中的坐标 (x, y)")
         sb.appendLine("- 输入文字前必须先点击输入框")
+        sb.appendLine("- 严格按照任务规划的步骤顺序执行")
+        sb.appendLine("- 每次只执行一个操作，等待验证后再继续")
         sb.appendLine("- 目标达成后立即调用 finished")
+        
+        // 如果有对话历史，提醒 AI 保持上下文
+        if (!conversationContext.isNullOrBlank()) {
+            sb.appendLine("- 请参考对话历史中的上下文信息")
+        }
         
         return sb.toString()
     }

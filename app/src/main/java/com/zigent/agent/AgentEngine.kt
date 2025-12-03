@@ -59,6 +59,16 @@ interface AgentCallback {
      * AI reasoning callback (for displaying GLM thinking process)
      */
     fun onReasoning(reasoning: String) {}
+    
+    /**
+     * 任务规划完成回调
+     */
+    fun onPlanGenerated(plan: TaskPlan) {}
+    
+    /**
+     * 操作确认请求回调
+     */
+    fun onConfirmationRequired(action: AgentAction, reason: String, onConfirm: () -> Unit, onCancel: () -> Unit) {}
 }
 
 /**
@@ -123,11 +133,19 @@ class AgentEngine @Inject constructor(
     private var aiSettings: AiSettings? = null
     
     // 操作验证器
-    // ActionVerifier（操作验证器）
     private val actionVerifier by lazy { ActionVerifier(context) }
     
-    // 任务分解器
+    // 任务分解器（规则模板，备用）
     private val taskDecomposer = TaskDecomposer()
+    
+    // AI 任务规划器
+    private var taskPlanner: TaskPlanner? = null
+    
+    // 对话记忆管理器
+    private val conversationMemory = ConversationMemory()
+    
+    // 当前执行状态
+    private var planExecutionState: PlanExecutionState? = null
     
     // Shizuku 管理器
     private val shizukuManager: ShizukuManager by lazy {
@@ -152,8 +170,19 @@ class AgentEngine @Inject constructor(
     fun configureAi(settings: AiSettings) {
         aiSettings = settings
         actionDecider = ActionDecider(settings)
+        taskPlanner = TaskPlanner(settings)
         Logger.i("AI configured: ${settings.provider}", TAG)
     }
+    
+    /**
+     * 获取对话记忆管理器
+     */
+    fun getConversationMemory(): ConversationMemory = conversationMemory
+    
+    /**
+     * 获取任务规划器
+     */
+    fun getTaskPlanner(): TaskPlanner? = taskPlanner
 
     /**
      * 获取当前能力状态
@@ -217,51 +246,36 @@ class AgentEngine @Inject constructor(
 
     /**
      * 执行任务主流程
+     * 增强版：支持 AI 规划、多轮记忆、操作确认
      */
     private suspend fun executeTask(task: String) {
         Logger.i("Starting task: $task", TAG)
         val startTime = System.currentTimeMillis()
+        val taskId = currentTask?.id ?: UUID.randomUUID().toString()
         
         try {
-            // 0. 准备设备上下文（已安装应用列表 + 初始屏幕状态）
+            // 0. 初始化记忆上下文
+            conversationMemory.startTask(taskId, task)
+            actionVerifier.clearFailureHistory()
+            
+            // 1. 准备设备上下文（已安装应用列表 + 初始屏幕状态）
             _state.value = AgentState.ANALYZING
             callback?.onStateChanged(AgentState.ANALYZING)
             callback?.onProgress("正在获取设备信息...")
             
             prepareDeviceContext()
             
-            // 1. 分析任务类型
+            // 2. 分析任务类型
             callback?.onProgress("正在分析任务...")
             
             val taskAnalysis = analyzeTask(task)
             Logger.i("Task analysis: type=${taskAnalysis.needsExecution}, isChat=${taskAnalysis.isSimpleChat}", TAG)
             
-            // 支付/转账等敏感操作需要用户确认
-            if (taskAnalysis.requiresUserConfirmation && taskAnalysis.needsExecution) {
-                _state.value = AgentState.WAITING_USER
-                callback?.onStateChanged(AgentState.WAITING_USER)
-                callback?.onAskUser("检测到可能涉及支付/转账/下单等敏感操作，是否确认继续执行？")
-                return
-            }
-            
-            // 2. 根据任务类型选择执行模式
+            // 3. 根据任务类型选择执行模式
             if (taskAnalysis.isSimpleChat) {
                 // 简单对话模式
                 executeSimpleChatMode(task)
             } else {
-                // 任务规划：始终先让 AI 规划步骤，便于复杂任务按顺序执行
-                var preplannedTask: com.zigent.agent.DecomposedTask? = null
-                try {
-                    preplannedTask = taskDecomposer.decompose(task)
-                    currentTask = currentTask?.copy(
-                        steps = preplannedTask.subTasks.map { it.description }
-                    )
-                    val summary = taskDecomposer.generateTaskSummary(preplannedTask)
-                    callback?.onProgress(summary)
-                } catch (e: Exception) {
-                    Logger.w("Task decomposition failed, fallback to inline decisions", TAG)
-                }
-                
                 // 检查是否有执行能力
                 val capabilities = getCapabilities()
                 if (!capabilities.canExecuteActions) {
@@ -269,24 +283,168 @@ class AgentEngine @Inject constructor(
                     callback?.onProgress("无法执行操作，切换到对话模式")
                     executeSimpleChatMode(task)
                 } else {
-                    // 完整执行模式
-                    executeFullMode(task, taskAnalysis, preplannedTask)
+                    // 使用 AI 规划器生成执行计划
+                    val plan = generateTaskPlan(task, taskAnalysis)
+                    
+                    // 检查是否需要用户确认
+                    if (plan.requiresConfirmation) {
+                        requestUserConfirmation(plan)
+                        return
+                    }
+                    
+                    // 执行规划
+                    executeWithPlan(task, plan)
                 }
             }
             
-            // 保存任务历史
+            // 4. 保存任务历史和记忆
+            conversationMemory.endTask(_state.value == AgentState.COMPLETED)
             saveTaskHistory(task, startTime)
             
         } catch (e: CancellationException) {
             Logger.i("Task cancelled by user", TAG)
+            conversationMemory.endTask(false)
             _state.value = AgentState.IDLE
             callback?.onStateChanged(AgentState.IDLE)
         } catch (e: Exception) {
             Logger.e("Task execution error", e, TAG)
+            conversationMemory.endTask(false)
             _state.value = AgentState.FAILED
             callback?.onStateChanged(AgentState.FAILED)
             callback?.onTaskFailed("执行出错: ${e.message}")
         }
+    }
+    
+    /**
+     * 生成任务规划
+     */
+    private suspend fun generateTaskPlan(task: String, analysis: TaskAnalysis): TaskPlan {
+        _state.value = AgentState.PLANNING
+        callback?.onStateChanged(AgentState.PLANNING)
+        callback?.onProgress("正在规划任务步骤...")
+        
+        val planner = taskPlanner
+        if (planner != null) {
+            // 使用 AI 规划器
+            val conversationContext = conversationMemory.buildConversationContext()
+            val longTermContext = conversationMemory.buildLongTermMemoryContext(task)
+            val context = "$conversationContext\n$longTermContext"
+            
+            val result = planner.planTask(task, context)
+            result.fold(
+                onSuccess = { plan ->
+                    Logger.i("AI plan generated: ${plan.steps.size} steps", TAG)
+                    
+                    // 更新任务和记忆
+                    currentTask = currentTask?.copy(
+                        steps = plan.steps.map { it.description }
+                    )
+                    conversationMemory.updatePlan(plan.steps.map { it.description })
+                    
+                    // 通知回调
+                    val summary = planner.getPlanSummary(plan)
+                    callback?.onProgress(summary)
+                    callback?.onPlanGenerated(plan)
+                    
+                    return plan
+                },
+                onFailure = { error ->
+                    Logger.w("AI planning failed, using fallback: ${error.message}", TAG)
+                }
+            )
+        }
+        
+        // 回退到规则模板规划
+        return createFallbackPlan(task, analysis)
+    }
+    
+    /**
+     * 创建回退规划
+     */
+    private fun createFallbackPlan(task: String, analysis: TaskAnalysis): TaskPlan {
+        val decomposed = taskDecomposer.decompose(task)
+        
+        val steps = decomposed.subTasks.mapIndexed { index, subTask ->
+            PlanStep(
+                index = index,
+                description = subTask.description,
+                expectedAction = subTask.actionHint?.name,
+                targetElement = subTask.targetElement,
+                inputData = subTask.inputText,
+                verification = null,
+                isOptional = subTask.isOptional
+            )
+        }
+        
+        return TaskPlan(
+            taskId = currentTask?.id ?: UUID.randomUUID().toString(),
+            originalGoal = task,
+            refinedGoal = task,
+            steps = steps,
+            targetApp = decomposed.targetApp,
+            estimatedDuration = decomposed.estimatedSteps * 5,
+            complexity = when (decomposed.complexity) {
+                TaskComplexity.SIMPLE -> PlanComplexity.SIMPLE
+                TaskComplexity.MODERATE -> PlanComplexity.MODERATE
+                TaskComplexity.COMPLEX -> PlanComplexity.COMPLEX
+                TaskComplexity.VERY_COMPLEX -> PlanComplexity.VERY_COMPLEX
+            },
+            preconditions = emptyList(),
+            risks = emptyList(),
+            requiresConfirmation = analysis.requiresUserConfirmation
+        )
+    }
+    
+    /**
+     * 请求用户确认
+     */
+    private fun requestUserConfirmation(plan: TaskPlan) {
+        _state.value = AgentState.WAITING_USER
+        callback?.onStateChanged(AgentState.WAITING_USER)
+        
+        val risks = plan.risks.joinToString("\n")
+        val message = buildString {
+            appendLine("检测到可能涉及敏感操作：")
+            appendLine("任务: ${plan.refinedGoal}")
+            if (risks.isNotEmpty()) {
+                appendLine("风险: $risks")
+            }
+            appendLine("\n是否确认继续执行？")
+        }
+        
+        callback?.onAskUser(message)
+    }
+    
+    /**
+     * 按规划执行任务
+     */
+    private suspend fun executeWithPlan(task: String, plan: TaskPlan) {
+        Logger.i("Executing with plan: ${plan.steps.size} steps", TAG)
+        
+        // 初始化执行状态
+        val planner = taskPlanner
+        planExecutionState = planner?.startExecution(plan) ?: PlanExecutionState(plan)
+        
+        _state.value = AgentState.EXECUTING
+        callback?.onStateChanged(AgentState.EXECUTING)
+        
+        // 如果需要打开应用，先打开
+        plan.targetApp?.let { appName ->
+            callback?.onProgress("正在打开 $appName...")
+            val openAction = AgentAction(
+                type = ActionType.OPEN_APP,
+                description = "打开 $appName",
+                appName = appName
+            )
+            val result = actionExecutor.execute(openAction)
+            if (!result.success) {
+                Logger.w("Failed to open app: $appName", TAG)
+            }
+            delay(1500) // 等待应用启动
+        }
+        
+        // 执行主循环
+        executeMainLoop(task, plan)
     }
     
     /**
@@ -368,6 +526,360 @@ class AgentEngine @Inject constructor(
             // 默认当作需要执行的任务
             TaskAnalysis(task, true, false)
         }
+    }
+    
+    /**
+     * 执行主循环（增强版）
+     * 支持规划步骤跟踪、智能重试、记忆维护
+     */
+    private suspend fun executeMainLoop(task: String, plan: TaskPlan) {
+        var stepCount = 0
+        var consecutiveErrors = 0
+        val maxConsecutiveErrors = 3
+        var lastActionWasVlm = false
+        
+        while (stepCount < AiConfig.MAX_AGENT_STEPS) {
+            // 检查是否被取消
+            if (!coroutineContext.isActive) {
+                Logger.i("Task cancelled", TAG)
+                break
+            }
+            
+            stepCount++
+            val currentPlanStep = planExecutionState?.currentStep
+            val stepDesc = currentPlanStep?.description ?: "第${stepCount}步"
+            
+            Logger.d("=== Step $stepCount: $stepDesc ===", TAG)
+            callback?.onStepStarted(stepCount, stepDesc)
+            callback?.onProgress("第${stepCount}步: 正在分析屏幕...")
+            
+            // 1. 采集屏幕状态
+            val screenState = captureScreenSafe()
+            
+            // 2. AI 决策（传入规划上下文）
+            callback?.onProgress("第${stepCount}步: AI正在分析...")
+            
+            val decision = makeDecisionWithContext(task, screenState, currentPlanStep)
+            
+            Logger.d("AI thought: ${decision.thought}", TAG)
+            Logger.d("AI action: ${decision.action.type} - ${decision.action.description}", TAG)
+            
+            // 3. 检查特殊操作类型
+            when (decision.action.type) {
+                ActionType.FINISHED -> {
+                    handleTaskCompletion(decision.action.resultMessage ?: "任务完成")
+                    return
+                }
+                ActionType.FAILED -> {
+                    handleTaskFailure(decision.action.resultMessage ?: "任务失败")
+                    return
+                }
+                ActionType.ASK_USER -> {
+                    handleAskUser(decision.action.question ?: "需要您的确认")
+                    return
+                }
+                ActionType.DESCRIBE_SCREEN -> {
+                    if (lastActionWasVlm) {
+                        callback?.onProgress("已获取过屏幕描述，继续执行...")
+                        delay(AiConfig.STEP_DELAY)
+                        continue
+                    }
+                    lastActionWasVlm = true
+                    handleDescribeScreen(screenState, decision)
+                    delay(AiConfig.STEP_DELAY)
+                    continue
+                }
+                else -> { /* 继续执行 */ }
+            }
+            
+            // 4. 执行操作
+            val actionDesc = decision.action.description.take(50)
+            callback?.onProgress("第${stepCount}步: 执行 - $actionDesc")
+            
+            val result = executeActionSafe(decision.action)
+            
+            // 5. 操作验证（增强版）
+            val afterState = if (enableActionVerification && result.success) {
+                delay(AiConfig.ACTION_WAIT_TIME)
+                captureScreenSafe()
+            } else null
+            
+            val verificationResult = if (afterState != null) {
+                actionVerifier.verify(decision.action, screenState, afterState, currentPlanStep)
+            } else null
+            
+            val finalSuccess = result.success && (verificationResult?.success != false)
+            val finalErrorMessage = verificationResult?.message ?: result.errorMessage
+            
+            // 6. 记录步骤和记忆
+            val step = AgentStep(
+                stepNumber = stepCount,
+                screenStateBefore = screenState.screenDescription,
+                action = decision.action,
+                screenStateAfter = verificationResult?.message,
+                success = finalSuccess,
+                errorMessage = finalErrorMessage
+            )
+            executionHistory.add(step)
+            conversationMemory.recordStep(step)
+            
+            // 7. 处理结果
+            if (finalSuccess) {
+                consecutiveErrors = 0
+                lastActionWasVlm = false
+                callback?.onStepCompleted(stepCount, true, verificationResult?.message ?: result.message)
+                
+                // 更新规划进度
+                planExecutionState?.markStepComplete()
+                taskPlanner?.markCurrentStepComplete()
+                
+                // 检查规划是否完成
+                if (planExecutionState?.isComplete == true) {
+                    handleTaskCompletion("所有规划步骤已完成")
+                    return
+                }
+            } else {
+                consecutiveErrors++
+                callback?.onStepCompleted(stepCount, false, finalErrorMessage ?: "执行失败")
+                
+                // 处理重试
+                val handled = handleRetry(verificationResult, decision.action, currentPlanStep)
+                if (!handled) {
+                    if (consecutiveErrors >= maxConsecutiveErrors) {
+                        handleTaskFailure("连续执行失败 $consecutiveErrors 次，任务终止")
+                        return
+                    }
+                }
+            }
+            
+            // 8. 等待下一步
+            delay(AiConfig.STEP_DELAY)
+        }
+        
+        // 达到最大步数
+        if (stepCount >= AiConfig.MAX_AGENT_STEPS) {
+            handleTaskFailure("超过最大执行步数，任务终止")
+        }
+    }
+    
+    /**
+     * 带上下文的 AI 决策
+     */
+    private suspend fun makeDecisionWithContext(
+        task: String,
+        screenState: ScreenState,
+        currentPlanStep: PlanStep?
+    ): AiDecision {
+        val decider = actionDecider ?: throw IllegalStateException("ActionDecider not initialized")
+        
+        // 构建上下文
+        val workingMemory = conversationMemory.buildWorkingMemoryContext()
+        val planSteps = currentTask?.steps?.takeIf { it.isNotEmpty() }
+        
+        // 添加当前步骤提示
+        val stepHint = currentPlanStep?.let { step ->
+            buildString {
+                appendLine("\n## 当前规划步骤")
+                appendLine("步骤: ${step.description}")
+                step.expectedAction?.let { appendLine("预期操作: $it") }
+                step.targetElement?.let { appendLine("目标元素: $it") }
+                step.inputData?.let { appendLine("输入数据: $it") }
+            }
+        } ?: ""
+        
+        return try {
+            withTimeoutOrNull(60_000L) {
+                val decision = decider.decide(
+                    task = task,
+                    screenState = screenState,
+                    history = executionHistory,
+                    vlmDescription = null,
+                    planSteps = planSteps
+                )
+                
+                if (decision.thought.isNotBlank()) {
+                    callback?.onReasoning(decision.thought)
+                }
+                
+                decision
+            } ?: run {
+                Logger.e("AI decision timeout", TAG)
+                AiDecision(
+                    thought = "AI响应超时",
+                    action = AgentAction(
+                        type = ActionType.WAIT,
+                        description = "等待重试",
+                        waitTime = 2000L
+                    )
+                )
+            }
+        } catch (e: Exception) {
+            Logger.e("AI decision failed", e, TAG)
+            AiDecision(
+                thought = "AI调用异常: ${e.message}",
+                action = AgentAction(
+                    type = ActionType.FAILED,
+                    description = "AI服务异常",
+                    resultMessage = e.message
+                )
+            )
+        }
+    }
+    
+    /**
+     * 安全的屏幕采集
+     */
+    private suspend fun captureScreenSafe(): ScreenState {
+        return try {
+            withTimeoutOrNull(10_000L) {
+                captureScreen()
+            } ?: ScreenState(
+                packageName = "unknown",
+                activityName = null,
+                screenDescription = "屏幕采集超时",
+                uiElements = emptyList(),
+                screenshotBase64 = null
+            )
+        } catch (e: Exception) {
+            Logger.e("Screen capture failed", e, TAG)
+            ScreenState(
+                packageName = "unknown",
+                activityName = null,
+                screenDescription = "无法获取屏幕",
+                uiElements = emptyList(),
+                screenshotBase64 = null
+            )
+        }
+    }
+    
+    /**
+     * 安全的操作执行
+     */
+    private suspend fun executeActionSafe(action: AgentAction): ExecutionResult {
+        return try {
+            withTimeoutOrNull(30_000L) {
+                actionExecutor.execute(action)
+            } ?: ExecutionResult(false, "操作超时", "执行超时，请重试")
+        } catch (e: Exception) {
+            Logger.e("Action execution failed", e, TAG)
+            ExecutionResult(false, "", e.message)
+        }
+    }
+    
+    /**
+     * 处理 VLM 屏幕描述
+     */
+    private suspend fun handleDescribeScreen(screenState: ScreenState, decision: AiDecision) {
+        callback?.onProgress("使用视觉模型分析屏幕...")
+        
+        try {
+            val vlmDescription = withTimeoutOrNull(45_000L) {
+                actionDecider?.describeScreen(
+                    screenState.screenshotBase64,
+                    decision.action.text
+                )
+            }
+            
+            if (vlmDescription != null) {
+                Logger.i("VLM description obtained", TAG)
+                conversationMemory.addSystemMessage("VLM描述: ${vlmDescription.take(200)}")
+            }
+        } catch (e: Exception) {
+            Logger.e("VLM call failed", e, TAG)
+        }
+    }
+    
+    /**
+     * 处理重试逻辑
+     */
+    private suspend fun handleRetry(
+        verificationResult: VerificationResult?,
+        action: AgentAction,
+        planStep: PlanStep?
+    ): Boolean {
+        val retryAction = verificationResult?.retryAction ?: return false
+        
+        when (retryAction.type) {
+            RetryType.RETRY_ADJUSTED -> {
+                retryAction.adjustedAction?.let {
+                    callback?.onProgress("调整后重试: ${retryAction.reason}")
+                    val result = executeActionSafe(it)
+                    return result.success
+                }
+            }
+            RetryType.WAIT_AND_RETRY -> {
+                callback?.onProgress("等待后重试: ${retryAction.reason}")
+                delay(retryAction.waitTime)
+                val result = executeActionSafe(action)
+                return result.success
+            }
+            RetryType.SCROLL_AND_RETRY -> {
+                callback?.onProgress("滚动后重试: ${retryAction.reason}")
+                val scrollAction = AgentAction(
+                    type = ActionType.SWIPE_UP,
+                    description = "滚动查找元素",
+                    swipeDistance = 30
+                )
+                executeActionSafe(scrollAction)
+                delay(500)
+            }
+            RetryType.SKIP -> {
+                callback?.onProgress("跳过可选步骤")
+                planExecutionState?.skipOptionalStep()
+                taskPlanner?.skipCurrentStep()
+                return true
+            }
+            RetryType.FALLBACK -> {
+                callback?.onProgress("使用备选方案: ${retryAction.reason}")
+                // 备选方案由 AI 重新决策
+            }
+            RetryType.ABORT -> {
+                return false
+            }
+            else -> {}
+        }
+        
+        return false
+    }
+    
+    /**
+     * 处理任务完成
+     */
+    private suspend fun handleTaskCompletion(message: String) {
+        _state.value = AgentState.COMPLETED
+        callback?.onStateChanged(AgentState.COMPLETED)
+        callback?.onTaskCompleted(message)
+        conversationMemory.addAssistantMessage(message)
+        Logger.i("Task completed: $message", TAG)
+        
+        delay(1000)
+        _state.value = AgentState.IDLE
+        callback?.onStateChanged(AgentState.IDLE)
+    }
+    
+    /**
+     * 处理任务失败
+     */
+    private suspend fun handleTaskFailure(message: String) {
+        _state.value = AgentState.FAILED
+        callback?.onStateChanged(AgentState.FAILED)
+        callback?.onTaskFailed(message)
+        conversationMemory.addSystemMessage("任务失败: $message")
+        Logger.e("Task failed: $message", TAG)
+        
+        delay(1000)
+        _state.value = AgentState.IDLE
+        callback?.onStateChanged(AgentState.IDLE)
+    }
+    
+    /**
+     * 处理询问用户
+     */
+    private fun handleAskUser(question: String) {
+        _state.value = AgentState.WAITING_USER
+        callback?.onStateChanged(AgentState.WAITING_USER)
+        callback?.onAskUser(question)
+        conversationMemory.addAssistantMessage("等待用户输入: $question")
     }
 
     /**
