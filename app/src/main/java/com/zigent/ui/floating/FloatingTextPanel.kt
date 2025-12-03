@@ -29,10 +29,10 @@ class FloatingTextPanel(context: Context) : View(context) {
         
         // 面板尺寸（基准，实际按屏幕宽度 92% 自适应）
         const val PANEL_WIDTH = 340  // dp
-        const val PANEL_HEIGHT = 180 // dp
+        const val PANEL_HEIGHT = 140 // dp（基准，缩窄高度）
         const val PANEL_MARGIN = 16  // dp
         const val CORNER_RADIUS = 20f // dp（更圆润）
-        const val PADDING = 20 // dp（更大的内边距）
+        const val PADDING = 16 // dp（紧凑一些）
         const val LINE_SPACING = 6 // dp（行间距）
         
         // 动画时长
@@ -95,6 +95,10 @@ class FloatingTextPanel(context: Context) : View(context) {
     private var showAnimator: ValueAnimator? = null
     private var currentAlpha = 0f
     private val slideDistance = 14 * density
+    
+    // 拖动
+    private var lastTouchX = 0f
+    private var lastTouchY = 0f
 
     init {
         // 设置初始透明
@@ -122,7 +126,6 @@ class FloatingTextPanel(context: Context) : View(context) {
             WindowManager.LayoutParams.WRAP_CONTENT,
             type,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
                     WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
         ).apply {
@@ -307,8 +310,8 @@ class FloatingTextPanel(context: Context) : View(context) {
             contentLines * lineHeight + paddingPx * 0.6f
         } else 0f
         val desiredHeight = (paddingPx * 2) + titleHeight + contentHeight + hintHeight
-        val maxHeight = (screenHeightPx * 0.4f).toInt()
-        val minHeight = (140 * density).toInt()
+        val maxHeight = (screenHeightPx * 0.35f).toInt()
+        val minHeight = (100 * density).toInt()
         val finalHeight = desiredHeight.toInt().coerceIn(minHeight, maxHeight)
         setMeasuredDimension(panelWidthPx, finalHeight)
     }
@@ -363,6 +366,29 @@ class FloatingTextPanel(context: Context) : View(context) {
             val hintY = height - paddingPx.toFloat()
             canvas.drawText(currentHint, paddingPx.toFloat(), hintY, hintPaint)
         }
+    }
+
+    override fun onTouchEvent(event: android.view.MotionEvent): Boolean {
+        when (event.action) {
+            android.view.MotionEvent.ACTION_DOWN -> {
+                lastTouchX = event.rawX
+                lastTouchY = event.rawY
+                return true
+            }
+            android.view.MotionEvent.ACTION_MOVE -> {
+                val dx = event.rawX - lastTouchX
+                val dy = event.rawY - lastTouchY
+                layoutParams?.let { params ->
+                    params.x = (params.x + dx).toInt()
+                    params.y = (params.y + dy).toInt()
+                    windowManager?.updateViewLayout(this, params)
+                }
+                lastTouchX = event.rawX
+                lastTouchY = event.rawY
+                return true
+            }
+        }
+        return super.onTouchEvent(event)
     }
     
     /**
