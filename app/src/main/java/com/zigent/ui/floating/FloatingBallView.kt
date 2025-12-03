@@ -75,10 +75,6 @@ class FloatingBallView(context: Context) : View(context) {
         color = 0x80FFFFFF.toInt()
         style = Paint.Style.FILL
     }
-    private val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.FILL
-        alpha = 60  // 柔和外晕，不改变主色
-    }
     private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeWidth = 3f * resources.displayMetrics.density
@@ -106,7 +102,6 @@ class FloatingBallView(context: Context) : View(context) {
     private var ringProgress = 0f
     private var eyeOffset = 0f // 眼睛动画偏移
     private var blinkProgress = 1f // 眨眼进度 (1=睁眼, 0=闭眼)
-    private var glowPulse = 1f  // 外晕轻微脉冲
     
     // 触摸相关
     private var lastTouchX = 0f
@@ -227,7 +222,6 @@ class FloatingBallView(context: Context) : View(context) {
         mainPaint.color = color
         ringPaint.color = color
         irisPaint.color = color
-        glowPaint.color = color
     }
 
     /**
@@ -248,8 +242,6 @@ class FloatingBallView(context: Context) : View(context) {
                 } else {
                     1f
                 }
-                // 轻微呼吸脉冲
-                glowPulse = 0.96f + (0.08f * progress)
                 invalidate()
             }
             start()
@@ -428,10 +420,6 @@ class FloatingBallView(context: Context) : View(context) {
         val centerX = width / 2f
         val centerY = height / 2f
         val radius = (width / 2f - 4 * resources.displayMetrics.density) * currentScale
-        val glowRadius = radius + 8 * resources.displayMetrics.density * glowPulse
-        
-        // 绘制柔和外晕
-        canvas.drawCircle(centerX, centerY, glowRadius, glowPaint)
         
         // 绘制主圆（背景）
         canvas.drawCircle(centerX, centerY, radius, mainPaint)
