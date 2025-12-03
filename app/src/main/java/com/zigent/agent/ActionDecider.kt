@@ -303,10 +303,14 @@ class ActionDecider(
         // 任务规划（若已有）
         if (!planSteps.isNullOrEmpty()) {
             sb.appendLine("## 任务规划")
-            sb.appendLine("请按以下步骤顺序执行，不要遗漏任何步骤：")
+            val finishedCount = history.size
             planSteps.forEachIndexed { index, step ->
-                val status = if (index < history.size) "✓" else "○"
-                sb.appendLine("$status ${index + 1}. $step")
+                val marker = when {
+                    index < finishedCount -> "✔ 已完成"
+                    index == finishedCount -> "➡ 下一步"
+                    else -> "· 待执行"
+                }
+                sb.appendLine("$marker ${index + 1}. $step")
             }
             sb.appendLine()
         }
