@@ -79,7 +79,7 @@ class FloatingTextPanel(context: Context) : View(context) {
     // AI 推理过程文字画笔（小字体）
     private val reasoningPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
         color = ContextCompat.getColor(context, R.color.panel_hint)
-        textSize = 12 * density  // 较小的字体
+        textSize = 11 * density  // 更小的字体，避免喧宾夺主
         alpha = 180  // 稍微透明
     }
     
@@ -290,7 +290,8 @@ class FloatingTextPanel(context: Context) : View(context) {
      * 更新 AI 推理过程（不朗读，小字体展示）
      */
     fun updateReasoning(reasoning: String) {
-        currentReasoning = reasoning
+        // 保留末尾片段，避免占满空间
+        currentReasoning = reasoning.takeLast(240)
         // 如果当前不是执行/处理状态，切换到推理模式
         if (mode != PanelMode.STATUS) {
             mode = PanelMode.REASONING

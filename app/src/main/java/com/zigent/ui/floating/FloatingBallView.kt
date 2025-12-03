@@ -17,7 +17,6 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.view.animation.AccelerateDecelerateInterpolator
-import android.view.animation.LinearInterpolator
 import androidx.core.content.ContextCompat
 import com.zigent.R
 import com.zigent.utils.Logger
@@ -75,10 +74,6 @@ class FloatingBallView(context: Context) : View(context) {
         color = 0x80FFFFFF.toInt()
         style = Paint.Style.FILL
     }
-    private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-        strokeWidth = 3f * resources.displayMetrics.density
-    }
     private val iconPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = ContextCompat.getColor(context, R.color.white)
         style = Paint.Style.FILL
@@ -96,10 +91,8 @@ class FloatingBallView(context: Context) : View(context) {
     
     // 动画
     private var breathAnimator: ValueAnimator? = null
-    private var ringAnimator: ValueAnimator? = null
     private var eyeAnimator: ValueAnimator? = null
     private var currentScale = 1f
-    private var ringProgress = 0f
     private var eyeOffset = 0f // 眼睛动画偏移
     private var blinkProgress = 1f // 眨眼进度 (1=睁眼, 0=闭眼)
     
@@ -220,7 +213,6 @@ class FloatingBallView(context: Context) : View(context) {
             FloatingBallState.ERROR -> colorError
         }
         mainPaint.color = color
-        ringPaint.color = color
         irisPaint.color = color
     }
 
@@ -282,19 +274,34 @@ class FloatingBallView(context: Context) : View(context) {
     }
 
     /**
-     * 处理状态动画 - 环形进度
+     * 处理状态动画 - 轻微呼吸 + 巡视
      */
     private fun startProcessingAnimation() {
         blinkProgress = 1f
         eyeOffset = 0f
         currentScale = 1f
-        
-        ringAnimator = ValueAnimator.ofFloat(0f, 360f).apply {
-            duration = 1500L
+
+        // 轻微呼吸感，表示思考中
+        breathAnimator = ValueAnimator.ofFloat(0.98f, 1.04f).apply {
+            duration = 800L
+            repeatMode = ValueAnimator.REVERSE
             repeatCount = ValueAnimator.INFINITE
-            interpolator = LinearInterpolator()
+            interpolator = AccelerateDecelerateInterpolator()
             addUpdateListener { animator ->
-                ringProgress = animator.animatedValue as Float
+                currentScale = animator.animatedValue as Float
+                invalidate()
+            }
+            start()
+        }
+
+        // 轻微左右巡视，表现“观察”动作
+        eyeAnimator = ValueAnimator.ofFloat(-0.6f, 0.6f).apply {
+            duration = 1800L
+            repeatMode = ValueAnimator.REVERSE
+            repeatCount = ValueAnimator.INFINITE
+            interpolator = AccelerateDecelerateInterpolator()
+            addUpdateListener { animator ->
+                eyeOffset = animator.animatedValue as Float
                 invalidate()
             }
             start()
@@ -302,29 +309,33 @@ class FloatingBallView(context: Context) : View(context) {
     }
 
     /**
-     * 执行状态动画 - 环形进度 + 微微跳动
+     * 执行状态动画 - 脉冲 + 眼神确认
      */
     private fun startExecutingAnimation() {
         blinkProgress = 1f
         eyeOffset = 0f
-        
-        ringAnimator = ValueAnimator.ofFloat(0f, 360f).apply {
-            duration = 1200L
+
+        // 稍快的脉冲，突出“执行中”
+        breathAnimator = ValueAnimator.ofFloat(1f, 1.06f).apply {
+            duration = 520L
+            repeatMode = ValueAnimator.REVERSE
             repeatCount = ValueAnimator.INFINITE
-            interpolator = LinearInterpolator()
+            interpolator = AccelerateDecelerateInterpolator()
             addUpdateListener { animator ->
-                ringProgress = animator.animatedValue as Float
+                currentScale = animator.animatedValue as Float
                 invalidate()
             }
             start()
         }
-        
-        breathAnimator = ValueAnimator.ofFloat(1f, 1.05f).apply {
-            duration = 600L
-            repeatMode = ValueAnimator.REVERSE
+
+        // 眼睛轻点偏移，模拟快速确认
+        eyeAnimator = ValueAnimator.ofFloat(0f, 0.8f, -0.8f, 0f).apply {
+            duration = 1400L
+            repeatMode = ValueAnimator.RESTART
             repeatCount = ValueAnimator.INFINITE
+            interpolator = AccelerateDecelerateInterpolator()
             addUpdateListener { animator ->
-                currentScale = animator.animatedValue as Float
+                eyeOffset = animator.animatedValue as Float
                 invalidate()
             }
             start()
@@ -400,12 +411,9 @@ class FloatingBallView(context: Context) : View(context) {
     private fun stopAllAnimations() {
         breathAnimator?.cancel()
         breathAnimator = null
-        ringAnimator?.cancel()
-        ringAnimator = null
         eyeAnimator?.cancel()
         eyeAnimator = null
         currentScale = 1f
-        ringProgress = 0f
         blinkProgress = 1f
         eyeOffset = 0f
     }
@@ -423,20 +431,6 @@ class FloatingBallView(context: Context) : View(context) {
         
         // 绘制主圆（背景）
         canvas.drawCircle(centerX, centerY, radius, mainPaint)
-        
-        // 绘制进度环（处理/执行状态）
-        if (currentState == FloatingBallState.PROCESSING || currentState == FloatingBallState.EXECUTING) {
-            val ringRadius = radius + 4 * resources.displayMetrics.density
-            val rect = RectF(
-                centerX - ringRadius,
-                centerY - ringRadius,
-                centerX + ringRadius,
-                centerY + ringRadius
-            )
-            ringPaint.color = 0xAAFFFFFF.toInt()
-            ringPaint.alpha = 200
-            canvas.drawArc(rect, -90f + ringProgress, 90f, false, ringPaint)
-        }
         
         // 根据状态绘制内容
         when (currentState) {
