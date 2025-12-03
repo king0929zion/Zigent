@@ -38,6 +38,11 @@ interface InteractionCallback {
     fun onTaskProgress(progress: String)
     fun onTaskCompleted(result: String)
     fun onError(message: String)
+    
+    /**
+     * AI 推理过程回调（用于展示 GLM 的思考过程，不朗读）
+     */
+    fun onReasoning(reasoning: String) {}
 }
 
 /**
@@ -139,6 +144,12 @@ class FloatingInteractionController(
                     // 朗读完成后等待用户点击
                     Logger.d("AI question spoken, waiting for user to click floating ball", TAG)
                 }
+            }
+            
+            override fun onReasoning(reasoning: String) {
+                // AI 推理过程（传递给悬浮窗展示，不朗读）
+                Logger.d("AI reasoning: $reasoning", TAG)
+                callback?.onReasoning(reasoning)
             }
         }
     }

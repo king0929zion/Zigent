@@ -15,15 +15,16 @@ import kotlinx.coroutines.withContext
  * 操作决策器
  * 
  * 双模型架构：
- * - 主 LLM (DeepSeek-V3.2-Exp): 任务理解 + Function Calling
- * - 辅助 VLM (Qwen3-Omni-Captioner): 图片描述（当调用 describe_screen 时）
+ * - 主 LLM (GLM-4.6): 任务理解 + Function Calling
+ * - 辅助 VLM (Qwen3-VL-235B): 图片描述（当调用 describe_screen 时）
  * 
  * 工作流程：
  * 1. 收集屏幕元素信息（无障碍服务）
  * 2. 构建提示词发送给 LLM
  * 3. LLM 返回工具调用
- * 4. 如果是 describe_screen，调用 VLM 获取图片描述，再让 LLM 继续决策
- * 5. 返回最终决策
+ * 4. 验证工具参数和上下文
+ * 5. 如果是 describe_screen，调用 VLM 获取图片描述，再让 LLM 继续决策
+ * 6. 返回最终决策
  */
 class ActionDecider(
     private val aiSettings: AiSettings
@@ -48,6 +49,12 @@ class ActionDecider(
     private var vlmFailureCount = 0
     private val VLM_MAX_FAILURES = 3  // 连续失败 3 次后禁用 VLM
     
+    // 上一次调用的工具名（用于上下文校验）
+    private var lastToolName: String? = null
+    
+    // 当前输入框焦点状态
+    private var hasInputFocus: Boolean = false
+    
     /**
      * 设备上下文信息
      */
@@ -62,6 +69,27 @@ class ActionDecider(
     fun setDeviceContext(context: DeviceContext) {
         deviceContext = context
         Logger.i("Device context set: apps=${context.installedAppsText.length} chars", TAG)
+    }
+    
+    /**
+     * 更新输入框焦点状态
+     */
+    fun updateInputFocusState(hasFocus: Boolean) {
+        hasInputFocus = hasFocus
+        if (hasFocus) {
+            Logger.d("Input focus acquired", TAG)
+        }
+    }
+    
+    /**
+     * 重置工具调用上下文（新任务开始时调用）
+     */
+    fun resetToolContext() {
+        lastToolName = null
+        hasInputFocus = false
+        lastScreenDescription = null
+        lastScreenDescriptionTime = 0
+        Logger.d("Tool context reset", TAG)
     }
 
     /**
@@ -404,6 +432,7 @@ class ActionDecider(
 
     /**
      * 解析工具调用结果
+     * 增强版：传递屏幕元素信息用于上下文校验
      */
     private fun parseToolCallResult(
         result: ToolCallResult,
@@ -414,9 +443,21 @@ class ActionDecider(
         Logger.i("=== Parsing Tool Result ===", TAG)
         Logger.i("hasToolCall: ${result.hasToolCall}, hasText: ${result.hasTextResponse}", TAG)
         
+        // 提取屏幕元素文本列表用于上下文校验
+        val screenElements = screenState.uiElements.map { elem ->
+            val content = elem.text.ifEmpty { elem.description }
+            "$content (${elem.bounds.centerX}, ${elem.bounds.centerY})"
+        }
+        
+        // 检查是否有输入框获得焦点
+        val hasEditableFocus = screenState.uiElements.any { 
+            it.isEditable && it.isFocused 
+        }
+        updateInputFocusState(hasEditableFocus)
+        
         // 优先处理工具调用
         if (result.hasToolCall && result.toolCall != null) {
-            return parseToolCall(result.toolCall, result.reasoning)
+            return parseToolCall(result.toolCall, result.reasoning, screenElements)
         }
         
         // 处理文本响应
@@ -438,8 +479,13 @@ class ActionDecider(
 
     /**
      * 解析工具调用
+     * 增强版：包含参数验证和上下文校验
      */
-    private fun parseToolCall(toolCall: ToolCall, reasoning: String?): AiDecision {
+    private fun parseToolCall(
+        toolCall: ToolCall, 
+        reasoning: String?,
+        screenElements: List<String> = emptyList()
+    ): AiDecision {
         val functionName = toolCall.function.name
         val arguments = try {
             gson.fromJson(toolCall.function.arguments, JsonObject::class.java)
@@ -451,8 +497,54 @@ class ActionDecider(
         Logger.i("Tool: $functionName", TAG)
         Logger.d("Args: $arguments", TAG)
         
+        // === 参数验证 ===
+        val validation = AgentTools.validateToolCall(functionName, arguments)
+        if (!validation.isValid) {
+            Logger.w("Tool validation failed: ${validation.errors}", TAG)
+            return AiDecision(
+                thought = "参数验证失败: ${validation.errors.joinToString("; ")}",
+                action = AgentAction(
+                    type = ActionType.ASK_USER,
+                    description = "需要补充信息",
+                    question = "AI 生成的操作参数有误: ${validation.errors.first()}"
+                )
+            )
+        }
+        
+        // 使用修正后的参数（如果有）
+        val finalArgs = validation.correctedArgs ?: arguments
+        if (validation.correctedArgs != null) {
+            Logger.i("Using corrected arguments", TAG)
+        }
+        if (validation.warnings.isNotEmpty()) {
+            Logger.w("Validation warnings: ${validation.warnings}", TAG)
+        }
+        
+        // === 上下文校验 ===
+        val contextCheck = AgentTools.checkToolContext(
+            toolName = functionName,
+            args = finalArgs,
+            screenElements = screenElements,
+            hasInputFocus = hasInputFocus,
+            lastToolName = lastToolName
+        )
+        if (!contextCheck.isValid) {
+            Logger.w("Context check issues: ${contextCheck.issues}", TAG)
+            // 上下文问题不阻止执行，但记录警告
+            contextCheck.suggestions.forEach { suggestion ->
+                Logger.i("Context suggestion: $suggestion", TAG)
+            }
+        }
+        
+        // 更新上下文状态
+        lastToolName = functionName
+        if (functionName == "tap" || functionName == "long_press") {
+            // 点击后可能获取焦点
+            hasInputFocus = true
+        }
+        
         val thought = reasoning ?: "执行: $functionName"
-        val description = arguments.get("description")?.asString ?: functionName
+        val description = finalArgs.get("description")?.asString ?: functionName
         fun missingParam(param: String) = AiDecision(
             thought = "缺少必要参数: $param",
             action = AgentAction(
@@ -467,62 +559,62 @@ class ActionDecider(
             "tap" -> AgentAction(
                 type = ActionType.TAP,
                 description = description,
-                x = arguments.get("x")?.asInt ?: return missingParam("x"),
-                y = arguments.get("y")?.asInt ?: return missingParam("y")
+                x = finalArgs.get("x")?.asInt ?: return missingParam("x"),
+                y = finalArgs.get("y")?.asInt ?: return missingParam("y")
             )
             
             "long_press" -> AgentAction(
                 type = ActionType.LONG_PRESS,
                 description = description,
-                x = arguments.get("x")?.asInt ?: return missingParam("x"),
-                y = arguments.get("y")?.asInt ?: return missingParam("y"),
-                duration = arguments.get("duration")?.asInt ?: 800
+                x = finalArgs.get("x")?.asInt ?: return missingParam("x"),
+                y = finalArgs.get("y")?.asInt ?: return missingParam("y"),
+                duration = finalArgs.get("duration")?.asInt ?: 800
             )
             
             "double_tap" -> AgentAction(
                 type = ActionType.DOUBLE_TAP,
                 description = description,
-                x = arguments.get("x")?.asInt ?: return missingParam("x"),
-                y = arguments.get("y")?.asInt ?: return missingParam("y")
+                x = finalArgs.get("x")?.asInt ?: return missingParam("x"),
+                y = finalArgs.get("y")?.asInt ?: return missingParam("y")
             )
             
             // 滑动
             "swipe_up" -> AgentAction(
                 type = ActionType.SWIPE_UP,
                 description = description,
-                swipeDistance = arguments.get("distance")?.asInt ?: 50
+                swipeDistance = finalArgs.get("distance")?.asInt ?: 50
             )
             
             "swipe_down" -> AgentAction(
                 type = ActionType.SWIPE_DOWN,
                 description = description,
-                swipeDistance = arguments.get("distance")?.asInt ?: 50
+                swipeDistance = finalArgs.get("distance")?.asInt ?: 50
             )
             
             "swipe_left" -> AgentAction(
                 type = ActionType.SWIPE_LEFT,
                 description = description,
-                swipeDistance = arguments.get("distance")?.asInt ?: 30
+                swipeDistance = finalArgs.get("distance")?.asInt ?: 30
             )
             
             "swipe_right" -> AgentAction(
                 type = ActionType.SWIPE_RIGHT,
                 description = description,
-                swipeDistance = arguments.get("distance")?.asInt ?: 30
+                swipeDistance = finalArgs.get("distance")?.asInt ?: 30
             )
             
             "swipe" -> AgentAction(
                 type = ActionType.SWIPE,
                 description = description,
-                startX = arguments.get("start_x")?.asInt ?: return missingParam("start_x"),
-                startY = arguments.get("start_y")?.asInt ?: return missingParam("start_y"),
-                endX = arguments.get("end_x")?.asInt ?: return missingParam("end_x"),
-                endY = arguments.get("end_y")?.asInt ?: return missingParam("end_y"),
-                duration = arguments.get("duration")?.asInt ?: 300
+                startX = finalArgs.get("start_x")?.asInt ?: return missingParam("start_x"),
+                startY = finalArgs.get("start_y")?.asInt ?: return missingParam("start_y"),
+                endX = finalArgs.get("end_x")?.asInt ?: return missingParam("end_x"),
+                endY = finalArgs.get("end_y")?.asInt ?: return missingParam("end_y"),
+                duration = finalArgs.get("duration")?.asInt ?: 300
             )
             
             "scroll" -> {
-                val direction = arguments.get("direction")?.asString ?: "down"
+                val direction = finalArgs.get("direction")?.asString ?: "down"
                 val scrollType = when (direction) {
                     "up" -> ActionType.SWIPE_UP
                     "down" -> ActionType.SWIPE_DOWN
@@ -541,7 +633,7 @@ class ActionDecider(
             "input_text" -> AgentAction(
                 type = ActionType.INPUT_TEXT,
                 description = description,
-                text = arguments.get("text")?.asString ?: return missingParam("text")
+                text = finalArgs.get("text")?.asString ?: return missingParam("text")
             )
             
             "clear_text" -> AgentAction(
@@ -574,46 +666,46 @@ class ActionDecider(
             "open_app" -> AgentAction(
                 type = ActionType.OPEN_APP,
                 description = description,
-                appName = arguments.get("app")?.asString ?: return missingParam("app")
+                appName = finalArgs.get("app")?.asString ?: return missingParam("app")
             )
             
             "close_app" -> AgentAction(
                 type = ActionType.CLOSE_APP,
                 description = description,
-                appName = arguments.get("app")?.asString ?: return missingParam("app")
+                appName = finalArgs.get("app")?.asString ?: return missingParam("app")
             )
             
             // 视觉 - 需要调用 VLM
             "describe_screen" -> AgentAction(
                 type = ActionType.DESCRIBE_SCREEN,
                 description = description,
-                text = arguments.get("focus")?.asString
+                text = finalArgs.get("focus")?.asString
             )
             
             // 等待
             "wait" -> AgentAction(
                 type = ActionType.WAIT,
                 description = description,
-                waitTime = arguments.get("time")?.asLong ?: 2000L
+                waitTime = finalArgs.get("time")?.asLong ?: 2000L
             )
             
             // 状态
             "finished" -> AgentAction(
                 type = ActionType.FINISHED,
                 description = description,
-                resultMessage = arguments.get("message")?.asString
+                resultMessage = finalArgs.get("message")?.asString
             )
             
             "failed" -> AgentAction(
                 type = ActionType.FAILED,
                 description = description,
-                resultMessage = arguments.get("message")?.asString
+                resultMessage = finalArgs.get("message")?.asString
             )
             
             "ask_user" -> AgentAction(
                 type = ActionType.ASK_USER,
                 description = description,
-                question = arguments.get("question")?.asString
+                question = finalArgs.get("question")?.asString
             )
             
             else -> {

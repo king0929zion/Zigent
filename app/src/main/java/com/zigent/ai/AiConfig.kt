@@ -17,22 +17,23 @@ object AiConfig {
     // 硅基流动配置
     const val SILICONFLOW_BASE_URL = "https://api.siliconflow.cn/v1"
     
-    // 主 LLM 模型（默认 Qwen，支持 Function Calling）
-    const val SILICONFLOW_LLM_MODEL = "Qwen/Qwen3-Next-80B-A3B-Instruct"
+    // 主 LLM 模型（默认 GLM-4.6，支持 Function Calling）
+    const val SILICONFLOW_LLM_MODEL = "zai-org/GLM-4.6"
     
     // 备选 LLM 模型
     const val SILICONFLOW_LLM_DEEPSEEK = "deepseek-ai/DeepSeek-V3.2-Exp"
     
     // 辅助 VLM 模型（用于图片描述）
-    const val SILICONFLOW_VLM_MODEL = "Qwen/Qwen3-Omni-30B-A3B-Captioner"
+    const val SILICONFLOW_VLM_MODEL = "Qwen/Qwen3-VL-235B-A22B-Instruct"
     
     // 语音识别模型
     const val SILICONFLOW_ASR_MODEL = "FunAudioLLM/SenseVoiceSmall"
     
     // 可选的 LLM 模型列表
     val SILICONFLOW_LLM_OPTIONS = listOf(
-        "Qwen/Qwen3-Next-80B-A3B-Instruct" to "Qwen3 Next 80B (推荐)",
+        "zai-org/GLM-4.6" to "GLM-4.6 (推荐)",
         "deepseek-ai/DeepSeek-V3.2-Exp" to "DeepSeek V3.2",
+        "Qwen/Qwen3-Next-80B-A3B-Instruct" to "Qwen3 Next 80B",
         "Qwen/Qwen3-235B-A22B-Instruct" to "Qwen3 235B"
     )
     

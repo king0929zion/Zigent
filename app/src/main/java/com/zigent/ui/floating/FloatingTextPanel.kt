@@ -76,14 +76,22 @@ class FloatingTextPanel(context: Context) : View(context) {
         textSize = 15 * density  // 增大：13 -> 15
     }
     
+    // AI 推理过程文字画笔（小字体）
+    private val reasoningPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = ContextCompat.getColor(context, R.color.panel_hint)
+        textSize = 12 * density  // 较小的字体
+        alpha = 180  // 稍微透明
+    }
+    
     enum class PanelMode {
-        INFO, QUESTION, STATUS
+        INFO, QUESTION, STATUS, REASONING  // 新增 REASONING 模式
     }
     
     // 状态
     private var currentTitle = "语音输入"
     private var currentText = ""
     private var currentHint = "请开始说话..."
+    private var currentReasoning = ""  // AI 推理过程文本
     private var mode: PanelMode = PanelMode.STATUS
     private var isVisible = false
     
@@ -274,6 +282,28 @@ class FloatingTextPanel(context: Context) : View(context) {
         currentTitle = "执行中"
         currentText = ""
         currentHint = "AI 正在操作"
+        currentReasoning = ""
+        invalidate()
+    }
+    
+    /**
+     * 更新 AI 推理过程（不朗读，小字体展示）
+     */
+    fun updateReasoning(reasoning: String) {
+        currentReasoning = reasoning
+        // 如果当前不是执行/处理状态，切换到推理模式
+        if (mode != PanelMode.STATUS) {
+            mode = PanelMode.REASONING
+        }
+        requestLayout()  // 可能需要重新计算高度
+        invalidate()
+    }
+    
+    /**
+     * 清除推理文本
+     */
+    fun clearReasoning() {
+        currentReasoning = ""
         invalidate()
     }
 
@@ -309,8 +339,19 @@ class FloatingTextPanel(context: Context) : View(context) {
         val contentHeight = if (contentLines > 0) {
             contentLines * lineHeight + paddingPx * 0.6f
         } else 0f
-        val desiredHeight = (paddingPx * 2) + titleHeight + contentHeight + hintHeight
-        val maxHeight = (screenHeightPx * 0.35f).toInt()
+        
+        // 计算推理文本高度
+        val reasoningLineHeight = reasoningPaint.textSize + lineSpacingPx * 0.7f
+        val reasoningLines = if (currentReasoning.isNotEmpty()) 
+            wrapText(currentReasoning, maxContentWidth, reasoningPaint) else emptyList()
+        val maxReasoningLines = 3  // 最多显示 3 行推理文本
+        val actualReasoningLines = minOf(reasoningLines.size, maxReasoningLines)
+        val reasoningHeight = if (actualReasoningLines > 0) {
+            actualReasoningLines * reasoningLineHeight + paddingPx * 0.4f
+        } else 0f
+        
+        val desiredHeight = (paddingPx * 2) + titleHeight + contentHeight + reasoningHeight + hintHeight
+        val maxHeight = (screenHeightPx * 0.4f).toInt()  // 稍微增大最大高度
         val minHeight = (100 * density).toInt()
         val finalHeight = desiredHeight.toInt().coerceIn(minHeight, maxHeight)
         setMeasuredDimension(panelWidthPx, finalHeight)
@@ -327,18 +368,22 @@ class FloatingTextPanel(context: Context) : View(context) {
         val titleY = paddingPx + titlePaint.textSize
         canvas.drawText(currentTitle, paddingPx.toFloat(), titleY, titlePaint)
         
+        var currentY = titleY
+        
         // 绘制主文字（智能多行换行）
         if (currentText.isNotEmpty()) {
             val maxWidth = (width - paddingPx * 2).toFloat()
             val lineSpacingPx = (LINE_SPACING * density)
             val lineHeight = textPaint.textSize + lineSpacingPx
-            var textY = titleY + paddingPx * 0.8f + textPaint.textSize
+            currentY = titleY + paddingPx * 0.8f + textPaint.textSize
             
             // 智能换行：按可用宽度分割文字
             val lines = wrapText(currentText, maxWidth, textPaint)
             
             // 计算最多可以显示几行（保留底部提示空间）
-            val availableHeight = height - textY - paddingPx - hintPaint.textSize - paddingPx * 0.5f
+            val reservedHeight = paddingPx + hintPaint.textSize + paddingPx * 0.5f + 
+                if (currentReasoning.isNotEmpty()) reasoningPaint.textSize * 3 + paddingPx * 0.5f else 0f
+            val availableHeight = height - currentY - reservedHeight
             val maxLines = (availableHeight / lineHeight).toInt().coerceAtLeast(1)
             
             // 绘制文字行
@@ -356,12 +401,44 @@ class FloatingTextPanel(context: Context) : View(context) {
                     line
                 }
                 
-                canvas.drawText(displayLine, paddingPx.toFloat(), textY, textPaint)
-                textY += lineHeight
+                canvas.drawText(displayLine, paddingPx.toFloat(), currentY, textPaint)
+                currentY += lineHeight
             }
         }
         
-        // 绘制提示文字（居中底部）
+        // 绘制 AI 推理过程（小字体，浅色）
+        if (currentReasoning.isNotEmpty()) {
+            val maxWidth = (width - paddingPx * 2).toFloat()
+            val reasoningLineHeight = reasoningPaint.textSize + lineSpacingPx * 0.7f
+            
+            // 如果主文本为空，从标题下方开始
+            if (currentText.isEmpty()) {
+                currentY = titleY + paddingPx * 0.6f + reasoningPaint.textSize
+            } else {
+                currentY += paddingPx * 0.3f
+            }
+            
+            val reasoningLines = wrapText(currentReasoning, maxWidth, reasoningPaint)
+            val maxReasoningLines = 3  // 最多显示 3 行
+            
+            reasoningLines.take(maxReasoningLines).forEachIndexed { index, line ->
+                val displayLine = if (index == maxReasoningLines - 1 && reasoningLines.size > maxReasoningLines) {
+                    val ellipsis = "..."
+                    val ellipsisWidth = reasoningPaint.measureText(ellipsis)
+                    var truncated = line
+                    while (reasoningPaint.measureText(truncated) + ellipsisWidth > maxWidth && truncated.isNotEmpty()) {
+                        truncated = truncated.dropLast(1)
+                    }
+                    truncated + ellipsis
+                } else {
+                    line
+                }
+                canvas.drawText(displayLine, paddingPx.toFloat(), currentY, reasoningPaint)
+                currentY += reasoningLineHeight
+            }
+        }
+        
+        // 绘制提示文字（底部）
         if (currentHint.isNotEmpty()) {
             val hintY = height - paddingPx.toFloat()
             canvas.drawText(currentHint, paddingPx.toFloat(), hintY, hintPaint)
@@ -380,7 +457,8 @@ class FloatingTextPanel(context: Context) : View(context) {
                 val dy = event.rawY - lastTouchY
                 layoutParams?.let { params ->
                     params.x = (params.x + dx).toInt()
-                    params.y = (params.y + dy).toInt()
+                    // 修复：由于 gravity 是 BOTTOM，y 从底部计算，向上滑动(dy<0)应该让 y 增大
+                    params.y = (params.y - dy).toInt()
                     windowManager?.updateViewLayout(this, params)
                 }
                 lastTouchX = event.rawX

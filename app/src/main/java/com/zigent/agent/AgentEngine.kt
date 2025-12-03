@@ -1,4 +1,4 @@
-package com.zigent.agent
+﻿package com.zigent.agent
 
 import android.content.Context
 import com.zigent.accessibility.ZigentAccessibilityService
@@ -54,6 +54,11 @@ interface AgentCallback {
     fun onTaskCompleted(result: String)
     fun onTaskFailed(error: String)
     fun onAskUser(question: String)
+    
+    /**
+     * AI reasoning callback (for displaying GLM thinking process)
+     */
+    fun onReasoning(reasoning: String) {}
 }
 
 /**
@@ -796,7 +801,14 @@ class AgentEngine @Inject constructor(
         // 添加超时保护，防止 AI 调用卡死
         return try {
             withTimeoutOrNull(60_000L) {  // 60 秒超时
-                decider.decide(task, screenState, executionHistory, planSteps = planSteps)
+                val decision = decider.decide(task, screenState, executionHistory, planSteps = planSteps)
+                
+                // 将 AI 的推理过程传递给回调（用于悬浮窗展示）
+                if (decision.thought.isNotBlank()) {
+                    callback?.onReasoning(decision.thought)
+                }
+                
+                decision
             } ?: run {
                 Logger.e("AI decision timeout after 60 seconds", TAG)
                 callback?.onProgress("AI 响应超时，正在重试...")

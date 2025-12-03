@@ -1,14 +1,20 @@
 package com.zigent.agent
 
+import com.google.gson.JsonObject
 import com.zigent.ai.models.*
+import com.zigent.utils.Logger
 
 /**
- * Agent 工具定义
- * 定义所有可用的 Function Calling 工具
+ * Agent 工具定义与验证
+ * 
+ * 核心职责：
+ * 1. 定义所有可用的 Function Calling 工具
+ * 2. 提供工具参数验证和校验
+ * 3. 提供工具调用上下文校验
  * 
  * 架构说明：
- * - 主 LLM (DeepSeek-V3.2-Exp)：任务理解 + Function Calling
- * - 辅助 VLM (Qwen3-Omni-Captioner)：图片描述（当调用 describe_screen 时）
+ * - 主 LLM (GLM-4.6)：任务理解 + Function Calling
+ * - 辅助 VLM (Qwen3-VL-235B)：图片描述（当调用 describe_screen 时）
  * 
  * 工具分类：
  * 1. 触摸操作：tap, long_press, double_tap
@@ -22,6 +28,21 @@ import com.zigent.ai.models.*
  * 9. 任务状态：finished, failed, ask_user
  */
 object AgentTools {
+    
+    private const val TAG = "AgentTools"
+    
+    // ==================== 参数约束常量 ====================
+    object Constraints {
+        const val MIN_COORDINATE = 0
+        const val MAX_COORDINATE = 3000  // 适应大多数手机屏幕
+        const val MIN_SWIPE_DISTANCE = 1
+        const val MAX_SWIPE_DISTANCE = 100
+        const val MIN_DURATION = 100
+        const val MAX_DURATION = 5000
+        const val MIN_WAIT_TIME = 100
+        const val MAX_WAIT_TIME = 30000
+        const val MAX_TEXT_LENGTH = 1000
+    }
 
     /**
      * 所有可用的工具列表
@@ -438,7 +459,7 @@ object AgentTools {
     /**
      * 系统提示词
      * 参考 Manus AI 架构设计，采用结构化方法论
-     * 双模型架构：LLM (DeepSeek-V3.2) + VLM (Qwen3-Omni-Captioner)
+     * 双模型架构：LLM (GLM-4.6) + VLM (Qwen3-VL-235B)
      */
     val SYSTEM_PROMPT = """
 # Zigent - Android 自动化助手（工具调用）
@@ -446,18 +467,36 @@ object AgentTools {
 你通过 Function Calling 操作手机。遵守以下工作流和规则，禁止臆测。
 
 ## 工作流
-1) 分析：在 thought 中写清【目标】【计划步骤】【当前要做的步骤】。
-2) 执行：每次只调用 1 个工具，按计划推进。
-3) 验证/恢复：检查结果，失败重试≤3，必要时视觉或ask_user。
+1) **分析**：在 thought 中写清【目标】【计划步骤】【当前要做的步骤】。
+2) **执行**：每次只调用 1 个工具，按计划推进。
+3) **验证/恢复**：检查结果，失败重试≤3，必要时视觉或ask_user。
+
+## 工具调用规范
+
+### 参数约束
+- **坐标 (x, y)**：必须从屏幕元素列表获取，禁止编造
+- **滑动距离 (distance)**：1-100 表示屏幕百分比
+- **时间 (duration/time)**：毫秒单位，合理范围 100-5000
+- **文本 (text)**：最大 1000 字符
+
+### 上下文校验
+- **输入前**：必须先 tap 输入框获取焦点
+- **describe_screen**：不能连续调用，获取后必须先执行其他操作
+- **坐标操作**：屏幕元素为空时考虑调用 describe_screen
+
+### 错误恢复
+- 点击失败：滑动查找或调用 describe_screen
+- 输入失败：先点击输入框，清空后重输
+- 应用未找到：检查完整名称，确认已安装
 
 ## 关键规则
-- 应用匹配：open_app 必须用已安装列表的完整名称；别名匹配后仍用完整名；刚打开的应用，不要再声称未安装，可校验当前前台包名。
-- 输入前聚焦：输入前先 tap 输入框（📝）；坐标必须来自元素/视觉。
-- 找不到就滚动：元素找不到先 swipe_up/down；元素为空/不可抓取/需要图片时，调用 describe_screen 获取视觉描述。describe_screen 不能连续调用。
-- 一步一工具：禁止把多个动作写在一个描述里。
-- 安全：涉及支付/转账/下单需先询问用户确认；不要编造安装状态或输出坐标文本。
-- 结束语义：目标达成立刻调 finished；无法继续才 failed；信息不足才 ask_user。
-- 保持上下文：记住计划和已完成步骤，基于历史继续，不要重复或重置进度。
+- **应用匹配**：open_app 必须用已安装列表的完整名称；别名匹配后仍用完整名；刚打开的应用，不要再声称未安装，可校验当前前台包名。
+- **输入前聚焦**：输入前先 tap 输入框（📝）；坐标必须来自元素/视觉。
+- **找不到就滚动**：元素找不到先 swipe_up/down；元素为空/不可抓取/需要图片时，调用 describe_screen 获取视觉描述。
+- **一步一工具**：禁止把多个动作写在一个描述里。
+- **安全**：涉及支付/转账/下单需先询问用户确认；不要编造安装状态或输出坐标文本。
+- **结束语义**：目标达成立刻调 finished；无法继续才 failed；信息不足才 ask_user。
+- **保持上下文**：记住计划和已完成步骤，基于历史继续，不要重复或重置进度。
 
 ## 屏幕元素符号
 - 🔘 "文本" (x, y) ← 可点击
@@ -527,5 +566,245 @@ object AgentTools {
      */
     fun getToolNames(): List<String> {
         return ALL_TOOLS.map { it.function.name }
+    }
+    
+    // ==================== 参数验证 ====================
+    
+    /**
+     * 工具参数验证结果
+     */
+    data class ValidationResult(
+        val isValid: Boolean,
+        val errors: List<String> = emptyList(),
+        val warnings: List<String> = emptyList(),
+        val correctedArgs: JsonObject? = null  // 自动修正后的参数
+    )
+    
+    /**
+     * 验证工具调用参数
+     * 返回验证结果，包含错误信息和可能的自动修正
+     */
+    fun validateToolCall(toolName: String, args: JsonObject): ValidationResult {
+        val errors = mutableListOf<String>()
+        val warnings = mutableListOf<String>()
+        val correctedArgs = args.deepCopy()
+        
+        when (toolName) {
+            "tap", "long_press", "double_tap" -> {
+                // 验证坐标
+                val x = args.get("x")?.asInt
+                val y = args.get("y")?.asInt
+                
+                if (x == null) errors.add("缺少必要参数: x")
+                if (y == null) errors.add("缺少必要参数: y")
+                
+                x?.let {
+                    if (it < Constraints.MIN_COORDINATE || it > Constraints.MAX_COORDINATE) {
+                        errors.add("x坐标超出范围: $it (应在 ${Constraints.MIN_COORDINATE}-${Constraints.MAX_COORDINATE})")
+                    }
+                }
+                y?.let {
+                    if (it < Constraints.MIN_COORDINATE || it > Constraints.MAX_COORDINATE) {
+                        errors.add("y坐标超出范围: $it (应在 ${Constraints.MIN_COORDINATE}-${Constraints.MAX_COORDINATE})")
+                    }
+                }
+                
+                // 验证 long_press 的 duration
+                if (toolName == "long_press") {
+                    val duration = args.get("duration")?.asInt ?: 800
+                    if (duration < Constraints.MIN_DURATION || duration > Constraints.MAX_DURATION) {
+                        warnings.add("duration 建议范围: ${Constraints.MIN_DURATION}-${Constraints.MAX_DURATION}")
+                        correctedArgs.addProperty("duration", duration.coerceIn(Constraints.MIN_DURATION, Constraints.MAX_DURATION))
+                    }
+                }
+            }
+            
+            "swipe" -> {
+                val startX = args.get("start_x")?.asInt
+                val startY = args.get("start_y")?.asInt
+                val endX = args.get("end_x")?.asInt
+                val endY = args.get("end_y")?.asInt
+                
+                if (startX == null) errors.add("缺少必要参数: start_x")
+                if (startY == null) errors.add("缺少必要参数: start_y")
+                if (endX == null) errors.add("缺少必要参数: end_x")
+                if (endY == null) errors.add("缺少必要参数: end_y")
+                
+                // 验证坐标范围
+                listOf(startX to "start_x", startY to "start_y", endX to "end_x", endY to "end_y").forEach { (value, name) ->
+                    value?.let {
+                        if (it < Constraints.MIN_COORDINATE || it > Constraints.MAX_COORDINATE) {
+                            errors.add("$name 坐标超出范围: $it")
+                        }
+                    }
+                }
+            }
+            
+            "swipe_up", "swipe_down", "swipe_left", "swipe_right" -> {
+                val distance = args.get("distance")?.asInt ?: 50
+                if (distance < Constraints.MIN_SWIPE_DISTANCE || distance > Constraints.MAX_SWIPE_DISTANCE) {
+                    warnings.add("滑动距离应在 ${Constraints.MIN_SWIPE_DISTANCE}-${Constraints.MAX_SWIPE_DISTANCE}%")
+                    correctedArgs.addProperty("distance", distance.coerceIn(Constraints.MIN_SWIPE_DISTANCE, Constraints.MAX_SWIPE_DISTANCE))
+                }
+            }
+            
+            "scroll" -> {
+                val direction = args.get("direction")?.asString
+                if (direction == null) {
+                    errors.add("缺少必要参数: direction")
+                } else if (direction !in listOf("up", "down", "left", "right")) {
+                    errors.add("无效的滚动方向: $direction (应为 up/down/left/right)")
+                }
+            }
+            
+            "input_text" -> {
+                val text = args.get("text")?.asString
+                if (text.isNullOrEmpty()) {
+                    errors.add("缺少必要参数: text")
+                } else if (text.length > Constraints.MAX_TEXT_LENGTH) {
+                    warnings.add("文本过长，已截断到 ${Constraints.MAX_TEXT_LENGTH} 字符")
+                    correctedArgs.addProperty("text", text.take(Constraints.MAX_TEXT_LENGTH))
+                }
+            }
+            
+            "open_app" -> {
+                val app = args.get("app")?.asString
+                if (app.isNullOrEmpty()) {
+                    errors.add("缺少必要参数: app")
+                }
+            }
+            
+            "wait" -> {
+                val time = args.get("time")?.asLong ?: 2000L
+                if (time < Constraints.MIN_WAIT_TIME || time > Constraints.MAX_WAIT_TIME) {
+                    warnings.add("等待时间应在 ${Constraints.MIN_WAIT_TIME}-${Constraints.MAX_WAIT_TIME}ms")
+                    correctedArgs.addProperty("time", time.coerceIn(Constraints.MIN_WAIT_TIME.toLong(), Constraints.MAX_WAIT_TIME.toLong()))
+                }
+            }
+            
+            "finished", "failed" -> {
+                val message = args.get("message")?.asString
+                if (message.isNullOrEmpty()) {
+                    warnings.add("建议提供 message 参数说明结果")
+                }
+            }
+            
+            "ask_user" -> {
+                val question = args.get("question")?.asString
+                if (question.isNullOrEmpty()) {
+                    errors.add("缺少必要参数: question")
+                }
+            }
+        }
+        
+        if (errors.isNotEmpty()) {
+            Logger.w("Tool validation errors for $toolName: $errors", TAG)
+        }
+        
+        return ValidationResult(
+            isValid = errors.isEmpty(),
+            errors = errors,
+            warnings = warnings,
+            correctedArgs = if (correctedArgs != args) correctedArgs else null
+        )
+    }
+    
+    /**
+     * 上下文校验结果
+     */
+    data class ContextCheckResult(
+        val isValid: Boolean,
+        val issues: List<String> = emptyList(),
+        val suggestions: List<String> = emptyList()
+    )
+    
+    /**
+     * 校验工具调用的上下文合理性
+     * 检查工具调用是否符合当前屏幕状态
+     */
+    fun checkToolContext(
+        toolName: String,
+        args: JsonObject,
+        screenElements: List<String>,  // 当前屏幕元素的文本列表
+        hasInputFocus: Boolean,         // 是否有输入框获得焦点
+        lastToolName: String? = null    // 上一次调用的工具
+    ): ContextCheckResult {
+        val issues = mutableListOf<String>()
+        val suggestions = mutableListOf<String>()
+        
+        when (toolName) {
+            "input_text" -> {
+                // 检查输入前是否有焦点
+                if (!hasInputFocus && lastToolName != "tap") {
+                    issues.add("输入文本前应先点击输入框")
+                    suggestions.add("建议先调用 tap 点击输入框获取焦点")
+                }
+            }
+            
+            "describe_screen" -> {
+                // 检查是否连续调用 describe_screen
+                if (lastToolName == "describe_screen") {
+                    issues.add("不应连续调用 describe_screen")
+                    suggestions.add("获取视觉描述后应先执行其他操作")
+                }
+            }
+            
+            "tap", "long_press", "double_tap" -> {
+                // 检查坐标是否在屏幕元素范围内
+                val x = args.get("x")?.asInt ?: 0
+                val y = args.get("y")?.asInt ?: 0
+                
+                // 检查坐标是否在已知元素附近（简化检查）
+                if (screenElements.isEmpty()) {
+                    issues.add("屏幕元素列表为空，坐标可能不准确")
+                    suggestions.add("考虑先调用 describe_screen 获取视觉信息")
+                }
+            }
+            
+            "open_app" -> {
+                val appName = args.get("app")?.asString ?: ""
+                if (appName.isNotEmpty()) {
+                    // 检查应用名是否包含常见别名（应该用完整名称）
+                    val commonAliases = mapOf(
+                        "谷歌笔记" to "Google Keep",
+                        "油管" to "YouTube",
+                        "浏览器" to "Chrome"
+                    )
+                    commonAliases[appName]?.let { fullName ->
+                        suggestions.add("应用别名 '$appName' 可能对应 '$fullName'，建议使用完整名称")
+                    }
+                }
+            }
+        }
+        
+        return ContextCheckResult(
+            isValid = issues.isEmpty(),
+            issues = issues,
+            suggestions = suggestions
+        )
+    }
+    
+    /**
+     * 获取工具调用的建议说明
+     * 用于错误恢复时提供替代方案
+     */
+    fun getToolSuggestion(toolName: String, error: String): String {
+        return when {
+            toolName == "tap" && error.contains("坐标") -> {
+                "坐标可能不准确，建议：1) 调用 describe_screen 获取视觉信息；2) 滑动页面查找目标元素；3) 使用屏幕元素列表中的坐标"
+            }
+            toolName == "input_text" && error.contains("失败") -> {
+                "输入失败，建议：1) 先点击输入框获取焦点；2) 清空现有内容后再输入；3) 检查是否有弹出键盘"
+            }
+            toolName == "open_app" && error.contains("未找到") -> {
+                "应用未找到，建议：1) 检查应用名称是否正确；2) 使用已安装应用列表中的完整名称；3) 询问用户确认应用名"
+            }
+            toolName == "swipe_up" || toolName == "swipe_down" -> {
+                "滑动后可能需要等待页面加载，建议调用 wait 等待 1-2 秒后再继续操作"
+            }
+            else -> {
+                "操作失败，建议重试或尝试其他方案"
+            }
+        }
     }
 }

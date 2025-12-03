@@ -331,6 +331,14 @@ class FloatingService : Service() {
                     hideTextPanel()
                 }
             }
+            
+            override fun onReasoning(reasoning: String) {
+                // AI 推理过程（小字体展示，不朗读）
+                serviceScope.launch(Dispatchers.Main) {
+                    showTextPanel()
+                    textPanel?.updateReasoning(reasoning)
+                }
+            }
         }
     }
 
