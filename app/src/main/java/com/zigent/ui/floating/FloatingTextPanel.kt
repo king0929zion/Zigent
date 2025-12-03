@@ -76,10 +76,15 @@ class FloatingTextPanel(context: Context) : View(context) {
         textSize = 15 * density  // 增大：13 -> 15
     }
     
+    private enum class PanelMode {
+        INFO, QUESTION, STATUS
+    }
+    
     // 状态
     private var currentTitle = "语音输入"
     private var currentText = ""
     private var currentHint = "请开始说话..."
+    private var mode: PanelMode = PanelMode.STATUS
     private var isVisible = false
     
     // 窗口管理
@@ -138,12 +143,13 @@ class FloatingTextPanel(context: Context) : View(context) {
     /**
      * 显示面板
      */
-    fun show(title: String = "语音输入", hint: String = "请开始说话...") {
+    fun show(title: String = "语音输入", hint: String = "请开始说话...", mode: PanelMode = PanelMode.INFO) {
         if (isVisible) return
         
         currentTitle = title
         currentText = ""
         currentHint = hint
+        this.mode = mode
         isVisible = true
         
         Logger.d("Showing text panel: $title", TAG)
@@ -197,7 +203,24 @@ class FloatingTextPanel(context: Context) : View(context) {
     /**
      * 更新显示文字
      */
-    fun updateText(text: String) {
+    fun updateQuestion(question: String) {
+        mode = PanelMode.QUESTION
+        currentTitle = "请确认"
+        currentText = question
+        currentHint = ""
+        invalidate()
+    }
+
+    fun updateStatus(title: String, hint: String = "") {
+        mode = PanelMode.STATUS
+        currentTitle = title
+        currentText = ""
+        currentHint = hint
+        invalidate()
+    }
+
+    fun updateInfo(text: String) {
+        mode = PanelMode.INFO
         currentText = text
         invalidate()
     }
@@ -222,7 +245,9 @@ class FloatingTextPanel(context: Context) : View(context) {
      * 设置为监听状态
      */
     fun setListeningMode() {
-        currentTitle = "🎙️ 正在聆听"
+        mode = PanelMode.STATUS
+        currentTitle = "正在聆听"
+        currentText = ""
         currentHint = "说完后点击悬浮球结束"
         invalidate()
     }
@@ -231,7 +256,9 @@ class FloatingTextPanel(context: Context) : View(context) {
      * 设置为处理状态
      */
     fun setProcessingMode() {
-        currentTitle = "🤖 AI处理中"
+        mode = PanelMode.STATUS
+        currentTitle = "AI 处理中"
+        currentText = ""
         currentHint = "请稍候..."
         invalidate()
     }
@@ -240,8 +267,10 @@ class FloatingTextPanel(context: Context) : View(context) {
      * 设置为执行状态
      */
     fun setExecutingMode() {
-        currentTitle = "⚡ 执行中"
-        currentHint = "AI正在操作..."
+        mode = PanelMode.STATUS
+        currentTitle = "执行中"
+        currentText = ""
+        currentHint = "AI 正在操作"
         invalidate()
     }
 
@@ -249,7 +278,8 @@ class FloatingTextPanel(context: Context) : View(context) {
      * 设置为完成状态
      */
     fun setCompletedMode(result: String) {
-        currentTitle = "✅ 完成"
+        mode = PanelMode.STATUS
+        currentTitle = "完成"
         currentText = result
         currentHint = ""
         invalidate()
@@ -259,7 +289,8 @@ class FloatingTextPanel(context: Context) : View(context) {
      * 设置为错误状态
      */
     fun setErrorMode(error: String) {
-        currentTitle = "❌ 错误"
+        mode = PanelMode.STATUS
+        currentTitle = "出错了"
         currentText = error
         currentHint = "点击悬浮球重试"
         invalidate()

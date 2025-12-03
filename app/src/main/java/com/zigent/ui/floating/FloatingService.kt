@@ -258,27 +258,34 @@ class FloatingService : Service() {
                     when (phase) {
                         InteractionPhase.IDLE -> {
                             hideTextPanel()
+                            hideEdgeGlow()
                         }
                         InteractionPhase.VOICE_INPUT -> {
                             showTextPanel()
                             textPanel?.setListeningMode()
+                            hideEdgeGlow()
                         }
                         InteractionPhase.AI_PROCESSING -> {
                             textPanel?.setProcessingMode()
+                            showEdgeGlow()
                         }
                         InteractionPhase.TASK_EXECUTING -> {
                             textPanel?.setExecutingMode()
+                            showEdgeGlow()
                         }
                         InteractionPhase.WAITING_ANSWER -> {
                             // 等待用户回答 AI 问题，显示面板
                             showTextPanel()
                             textPanel?.setProcessingMode()
+                            showEdgeGlow()
                         }
                         InteractionPhase.COMPLETED -> {
                             // 面板保持显示完成状态一段时间
+                            hideEdgeGlow()
                         }
                         InteractionPhase.ERROR -> {
                             // 面板保持显示错误状态一段时间
+                            hideEdgeGlow()
                         }
                     }
                 }
@@ -286,22 +293,22 @@ class FloatingService : Service() {
 
             override fun onVoiceResult(text: String) {
                 Logger.d("Voice result: $text", TAG)
-                serviceScope.launch(Dispatchers.Main) {
-                    textPanel?.updateText(text)
-                }
+                // 用户语音结果不向面板展示，保持面板仅用于AI状态/问题
             }
 
             override fun onAiResponse(response: String) {
                 Logger.d("AI response: $response", TAG)
                 serviceScope.launch(Dispatchers.Main) {
-                    textPanel?.updateText(response)
+                    showTextPanel()
+                    textPanel?.updateQuestion(response)
                 }
             }
 
             override fun onTaskProgress(progress: String) {
                 Logger.d("Task progress: $progress", TAG)
                 serviceScope.launch(Dispatchers.Main) {
-                    textPanel?.updateText(progress)
+                    showTextPanel()
+                    textPanel?.updateStatus(title = "执行中", hint = progress.take(40))
                 }
             }
 
@@ -433,7 +440,7 @@ class FloatingService : Service() {
                 val params = createLayoutParams()
                 attachToWindow(windowManager)
                 windowManager.addView(this, params)
-                show()
+                show(mode = FloatingTextPanel.PanelMode.STATUS)
             }
             Logger.d("Text panel shown", TAG)
         } catch (e: Exception) {

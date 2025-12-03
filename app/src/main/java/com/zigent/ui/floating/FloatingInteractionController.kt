@@ -132,7 +132,7 @@ class FloatingInteractionController(
                 // 当AI需要询问用户时
                 Logger.i("AI asking user: $question", TAG)
                 pendingAiQuestion = question
-                callback?.onTaskProgress("AI询问: $question")
+                callback?.onAiResponse(question)
                 
                 // 通过TTS朗读问题，并提示用户点击悬浮球回答
                 voiceManager.speak("$question。请点击悬浮球回答。") {
@@ -538,4 +538,3 @@ class FloatingInteractionController(
         scope.cancel()
     }
 }
-
