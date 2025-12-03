@@ -109,7 +109,8 @@ fun SettingsScreen(
                     ) {
                         OutlinedTextField(
                             value = when (provider) {
-                                AiProvider.SILICONFLOW -> "硅基流动 (推荐)"
+                                AiProvider.DOUBAO -> "豆包 (推荐)"
+                                AiProvider.SILICONFLOW -> "硅基流动"
                                 AiProvider.OPENAI -> "OpenAI"
                                 AiProvider.CLAUDE -> "Claude (Anthropic)"
                                 AiProvider.CUSTOM -> "自定义API"
@@ -133,7 +134,16 @@ fun SettingsScreen(
                             onDismissRequest = { expanded = false }
                         ) {
                             DropdownMenuItem(
-                                text = { Text("硅基流动 (推荐)") },
+                                text = { Text("豆包 (推荐)") },
+                                onClick = {
+                                    provider = AiProvider.DOUBAO
+                                    baseUrl = AiConfig.DOUBAO_BASE_URL
+                                    model = AiConfig.DOUBAO_LLM_MODEL
+                                    expanded = false
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("硅基流动") },
                                 onClick = {
                                     provider = AiProvider.SILICONFLOW
                                     baseUrl = AiConfig.SILICONFLOW_BASE_URL
@@ -220,8 +230,8 @@ fun SettingsScreen(
                 }
             }
             
-            // API URL（自定义时可编辑，硅基流动显示但不可编辑）
-            if (provider == AiProvider.CUSTOM || provider == AiProvider.SILICONFLOW) {
+            // API URL（自定义时可编辑，豆包/硅基流动显示但不可编辑）
+            if (provider == AiProvider.CUSTOM || provider == AiProvider.SILICONFLOW || provider == AiProvider.DOUBAO) {
                 Spacer(modifier = Modifier.height(16.dp))
                 
                 Card(
@@ -278,17 +288,19 @@ fun SettingsScreen(
                     
                     Spacer(modifier = Modifier.height(12.dp))
                     
-                    // 硅基流动使用下拉选择
-                    if (provider == AiProvider.SILICONFLOW) {
+                    // 豆包/硅基流动使用下拉选择
+                    if (provider == AiProvider.DOUBAO || provider == AiProvider.SILICONFLOW) {
                         var modelExpanded by remember { mutableStateOf(false) }
+                        val modelOptions = if (provider == AiProvider.DOUBAO) AiConfig.DOUBAO_LLM_OPTIONS else AiConfig.SILICONFLOW_LLM_OPTIONS
+                        val defaultModel = if (provider == AiProvider.DOUBAO) AiConfig.DOUBAO_LLM_MODEL else AiConfig.SILICONFLOW_LLM_MODEL
                         
                         ExposedDropdownMenuBox(
                             expanded = modelExpanded,
                             onExpandedChange = { modelExpanded = it }
                         ) {
                             OutlinedTextField(
-                                value = AiConfig.SILICONFLOW_LLM_OPTIONS.find { it.first == model }?.second
-                                    ?: model.ifEmpty { "Qwen3 Next 80B (推荐)" },
+                                value = modelOptions.find { it.first == model }?.second
+                                    ?: model.ifEmpty { modelOptions.firstOrNull()?.second ?: "" },
                                 onValueChange = {},
                                 readOnly = true,
                                 trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = modelExpanded) },
@@ -307,7 +319,7 @@ fun SettingsScreen(
                                 expanded = modelExpanded,
                                 onDismissRequest = { modelExpanded = false }
                             ) {
-                                AiConfig.SILICONFLOW_LLM_OPTIONS.forEach { (modelId, displayName) ->
+                                modelOptions.forEach { (modelId, displayName) ->
                                     DropdownMenuItem(
                                         text = { Text(displayName) },
                                         onClick = {
@@ -322,7 +334,7 @@ fun SettingsScreen(
                         Spacer(modifier = Modifier.height(8.dp))
                         
                         Text(
-                            text = "当前模型: ${model.ifEmpty { AiConfig.SILICONFLOW_LLM_MODEL }}",
+                            text = "当前模型: ${model.ifEmpty { defaultModel }}",
                             fontSize = 12.sp,
                             color = Color(0xFF64748B)
                         )
@@ -374,17 +386,24 @@ fun SettingsScreen(
                             provider = provider,
                             apiKey = apiKey,
                             baseUrl = when (provider) {
+                                AiProvider.DOUBAO -> AiConfig.DOUBAO_BASE_URL
                                 AiProvider.SILICONFLOW -> AiConfig.SILICONFLOW_BASE_URL
                                 AiProvider.CUSTOM -> baseUrl
                                 else -> ""
                             },
                             model = model.ifEmpty {
                                 when (provider) {
+                                    AiProvider.DOUBAO -> AiConfig.DOUBAO_LLM_MODEL
                                     AiProvider.SILICONFLOW -> AiConfig.SILICONFLOW_MODEL
                                     AiProvider.OPENAI -> AiConfig.DEFAULT_MODEL_OPENAI
                                     AiProvider.CLAUDE -> AiConfig.DEFAULT_MODEL_CLAUDE
                                     AiProvider.CUSTOM -> ""
                                 }
+                            },
+                            visionModel = when (provider) {
+                                AiProvider.DOUBAO -> AiConfig.DOUBAO_VLM_MODEL
+                                AiProvider.SILICONFLOW -> AiConfig.SILICONFLOW_VLM_MODEL
+                                else -> ""
                             }
                         )
                     )
@@ -433,17 +452,24 @@ fun SettingsScreen(
                             provider = provider,
                             apiKey = apiKey,
                             baseUrl = when (provider) {
+                                AiProvider.DOUBAO -> AiConfig.DOUBAO_BASE_URL
                                 AiProvider.SILICONFLOW -> AiConfig.SILICONFLOW_BASE_URL
                                 AiProvider.CUSTOM -> baseUrl
                                 else -> ""
                             },
                             model = model.ifEmpty {
                                 when (provider) {
+                                    AiProvider.DOUBAO -> AiConfig.DOUBAO_LLM_MODEL
                                     AiProvider.SILICONFLOW -> AiConfig.SILICONFLOW_MODEL
                                     AiProvider.OPENAI -> AiConfig.DEFAULT_MODEL_OPENAI
                                     AiProvider.CLAUDE -> AiConfig.DEFAULT_MODEL_CLAUDE
                                     AiProvider.CUSTOM -> ""
                                 }
+                            },
+                            visionModel = when (provider) {
+                                AiProvider.DOUBAO -> AiConfig.DOUBAO_VLM_MODEL
+                                AiProvider.SILICONFLOW -> AiConfig.SILICONFLOW_VLM_MODEL
+                                else -> ""
                             }
                         )
                     )

@@ -14,7 +14,34 @@ object AiConfig {
     const val DEFAULT_MODEL_OPENAI = "gpt-4o"
     const val DEFAULT_MODEL_CLAUDE = "claude-3-5-sonnet-20241022"
     
-    // 硅基流动配置
+    // ==================== 豆包配置（默认） ====================
+    // 火山方舟 API 地址（兼容 OpenAI 格式）
+    const val DOUBAO_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
+    
+    // 豆包 LLM 模型（默认）
+    const val DOUBAO_LLM_MODEL = "doubao-seed-1.6"
+    
+    // 豆包 VLM 模型（默认）
+    const val DOUBAO_VLM_MODEL = "doubao-seed-1.6-vision"
+    
+    // 豆包可选 LLM 模型列表
+    val DOUBAO_LLM_OPTIONS = listOf(
+        "doubao-seed-1.6" to "Doubao Seed 1.6 (推荐)",
+        "doubao-seed-1.6-lite" to "Doubao Seed 1.6 Lite",
+        "doubao-seed-1.6-flash" to "Doubao Seed 1.6 Flash",
+        "doubao-seed-1.6-thinking" to "Doubao Seed 1.6 Thinking",
+        "doubao-1.5-pro-32k" to "Doubao 1.5 Pro 32K",
+        "deepseek-v3.1" to "DeepSeek V3.1"
+    )
+    
+    // 豆包可选 VLM 模型列表
+    val DOUBAO_VLM_OPTIONS = listOf(
+        "doubao-seed-1.6-vision" to "Doubao Seed 1.6 Vision (推荐)",
+        "doubao-1.5-vision-pro" to "Doubao 1.5 Vision Pro",
+        "doubao-1.5-vision-lite" to "Doubao 1.5 Vision Lite"
+    )
+    
+    // ==================== 硅基流动配置 ====================
     const val SILICONFLOW_BASE_URL = "https://api.siliconflow.cn/v1"
     
     // 主 LLM 模型（默认 GLM-4.6，支持 Function Calling）
@@ -60,7 +87,8 @@ object AiConfig {
  * AI提供商类型
  */
 enum class AiProvider {
-    SILICONFLOW,  // 硅基流动（默认推荐）
+    DOUBAO,       // 豆包（默认推荐）
+    SILICONFLOW,  // 硅基流动
     OPENAI,
     CLAUDE,
     CUSTOM        // 自定义API（兼容OpenAI格式）
@@ -70,11 +98,11 @@ enum class AiProvider {
  * AI配置数据类
  */
 data class AiSettings(
-    val provider: AiProvider = AiProvider.SILICONFLOW,
+    val provider: AiProvider = AiProvider.DOUBAO,  // 默认使用豆包
     val apiKey: String = "",
-    val baseUrl: String = AiConfig.SILICONFLOW_BASE_URL,
-    val model: String = AiConfig.SILICONFLOW_LLM_MODEL,  // 主 LLM 模型
-    val visionModel: String = AiConfig.SILICONFLOW_VLM_MODEL,  // 辅助 VLM 模型
+    val baseUrl: String = AiConfig.DOUBAO_BASE_URL,
+    val model: String = AiConfig.DOUBAO_LLM_MODEL,  // 主 LLM 模型
+    val visionModel: String = AiConfig.DOUBAO_VLM_MODEL,  // 辅助 VLM 模型
     val maxTokens: Int = AiConfig.MAX_TOKENS,
     val temperature: Float = AiConfig.TEMPERATURE
 )

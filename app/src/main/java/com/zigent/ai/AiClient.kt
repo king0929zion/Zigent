@@ -25,6 +25,7 @@ class AiClient(private val settings: AiSettings) {
         private const val OPENAI_BASE_URL = "https://api.openai.com/v1"
         private const val CLAUDE_BASE_URL = "https://api.anthropic.com/v1"
         private const val SILICONFLOW_BASE_URL = "https://api.siliconflow.cn/v1"
+        private const val DOUBAO_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
     }
 
     private val gson: Gson = GsonBuilder()
@@ -75,7 +76,11 @@ class AiClient(private val settings: AiSettings) {
             )
             
             // 使用 VLM 模型
-            val visionModel = settings.visionModel.ifBlank { AiConfig.SILICONFLOW_VLM_MODEL }
+            val visionModel = when (settings.provider) {
+                AiProvider.DOUBAO -> settings.visionModel.ifBlank { AiConfig.DOUBAO_VLM_MODEL }
+                AiProvider.SILICONFLOW -> settings.visionModel.ifBlank { AiConfig.SILICONFLOW_VLM_MODEL }
+                else -> settings.visionModel.ifBlank { AiConfig.SILICONFLOW_VLM_MODEL }
+            }
             Logger.i("Using VLM model: $visionModel", TAG)
             
             // 简化请求，只包含必要参数
@@ -134,6 +139,7 @@ class AiClient(private val settings: AiSettings) {
         systemPrompt: String? = null
     ): Result<String> = withContext(Dispatchers.IO) {
         when (settings.provider) {
+            AiProvider.DOUBAO -> chatOpenAi(messages, systemPrompt, DOUBAO_BASE_URL)
             AiProvider.SILICONFLOW -> chatOpenAi(messages, systemPrompt, SILICONFLOW_BASE_URL)
             AiProvider.OPENAI -> chatOpenAi(messages, systemPrompt, OPENAI_BASE_URL)
             AiProvider.CUSTOM -> chatOpenAi(messages, systemPrompt, settings.baseUrl)
@@ -161,7 +167,11 @@ class AiClient(private val settings: AiSettings) {
             }
             
             // 使用 LLM 模型（支持 Function Calling）
-            val llmModel = settings.model.ifBlank { AiConfig.SILICONFLOW_LLM_MODEL }
+            val llmModel = when (settings.provider) {
+                AiProvider.DOUBAO -> settings.model.ifBlank { AiConfig.DOUBAO_LLM_MODEL }
+                AiProvider.SILICONFLOW -> settings.model.ifBlank { AiConfig.SILICONFLOW_LLM_MODEL }
+                else -> settings.model.ifBlank { AiConfig.SILICONFLOW_LLM_MODEL }
+            }
             Logger.i("Using LLM model: $llmModel", TAG)
             Logger.i("Tools count: ${tools.size}", TAG)
             
@@ -175,10 +185,11 @@ class AiClient(private val settings: AiSettings) {
             )
             
             val baseUrl = when (settings.provider) {
+                AiProvider.DOUBAO -> DOUBAO_BASE_URL
                 AiProvider.SILICONFLOW -> SILICONFLOW_BASE_URL
                 AiProvider.OPENAI -> OPENAI_BASE_URL
                 AiProvider.CUSTOM -> settings.baseUrl
-                else -> SILICONFLOW_BASE_URL
+                else -> DOUBAO_BASE_URL
             }.trimEnd('/')
             
             val httpRequest = Request.Builder()
@@ -258,6 +269,7 @@ class AiClient(private val settings: AiSettings) {
         systemPrompt: String? = null
     ): Result<String> = withContext(Dispatchers.IO) {
         when (settings.provider) {
+            AiProvider.DOUBAO -> chatOpenAiWithImage(prompt, imageBase64, systemPrompt, DOUBAO_BASE_URL)
             AiProvider.SILICONFLOW -> chatOpenAiWithImage(prompt, imageBase64, systemPrompt, SILICONFLOW_BASE_URL)
             AiProvider.OPENAI -> chatOpenAiWithImage(prompt, imageBase64, systemPrompt, OPENAI_BASE_URL)
             AiProvider.CUSTOM -> chatOpenAiWithImage(prompt, imageBase64, systemPrompt, settings.baseUrl)
@@ -281,7 +293,11 @@ class AiClient(private val settings: AiSettings) {
                 addAll(messages)
             }
 
-            val llmModel = settings.model.ifBlank { AiConfig.SILICONFLOW_LLM_MODEL }
+            val llmModel = when (settings.provider) {
+                AiProvider.DOUBAO -> settings.model.ifBlank { AiConfig.DOUBAO_LLM_MODEL }
+                AiProvider.SILICONFLOW -> settings.model.ifBlank { AiConfig.SILICONFLOW_LLM_MODEL }
+                else -> settings.model.ifBlank { AiConfig.SILICONFLOW_LLM_MODEL }
+            }
 
             val request = OpenAiRequest(
                 model = llmModel,
@@ -354,7 +370,11 @@ class AiClient(private val settings: AiSettings) {
             }
 
             // 使用 VLM 模型处理图片
-            val visionModel = settings.visionModel.ifBlank { AiConfig.SILICONFLOW_VLM_MODEL }
+            val visionModel = when (settings.provider) {
+                AiProvider.DOUBAO -> settings.visionModel.ifBlank { AiConfig.DOUBAO_VLM_MODEL }
+                AiProvider.SILICONFLOW -> settings.visionModel.ifBlank { AiConfig.SILICONFLOW_VLM_MODEL }
+                else -> settings.visionModel.ifBlank { AiConfig.SILICONFLOW_VLM_MODEL }
+            }
 
             val requestBody = mapOf(
                 "model" to visionModel,
