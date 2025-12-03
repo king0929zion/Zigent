@@ -1,4 +1,4 @@
-package com.zigent.agent
+﻿package com.zigent.agent
 
 import android.content.Context
 import com.zigent.agent.models.*
@@ -484,16 +484,17 @@ class ActionVerifier(
      * 从验证条件中提取目标
      */
     private fun extractTargetFromVerification(verification: String): String {
-        val patterns = listOf(
-            Regex("出现[""']?([^""']+)[""']?"),
-            Regex("显示[""']?([^""']+)[""']?"),
-            Regex("找到[""']?([^""']+)[""']?")
-        )
+        // 使用简单的字符串匹配
+        val keywords = listOf("出现", "显示", "找到")
         
-        for (pattern in patterns) {
-            val match = pattern.find(verification)
-            if (match != null) {
-                return match.groupValues[1].trim()
+        for (keyword in keywords) {
+            val index = verification.indexOf(keyword)
+            if (index >= 0) {
+                val afterKeyword = verification.substring(index + keyword.length).trim()
+                val cleaned = afterKeyword.takeWhile { it.isLetterOrDigit() || it in "汉字中文" || it.code > 127 }.take(50)
+                if (cleaned.isNotEmpty()) {
+                    return cleaned
+                }
             }
         }
         return ""
@@ -830,4 +831,5 @@ class ActionVerifier(
         return false
     }
 }
+
 

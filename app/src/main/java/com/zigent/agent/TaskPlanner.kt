@@ -1,4 +1,4 @@
-package com.zigent.agent
+﻿package com.zigent.agent
 
 import com.google.gson.Gson
 import com.google.gson.JsonArray
@@ -606,34 +606,46 @@ class TaskPlanner(
     }
     
     private fun extractSearchKeyword(goal: String): String {
-        val patterns = listOf(
-            Regex("搜索[\"'""]?([^\"'""\n]+)[\"'""]?"),
-            Regex("找[\"'""]?([^\"'""\n]+)[\"'""]?"),
-            Regex("查[\"'""]?([^\"'""\n]+)[\"'""]?")
-        )
+        val keywords = listOf("搜索", "找", "查")
         
-        for (pattern in patterns) {
-            val match = pattern.find(goal)
-            if (match != null) {
-                return match.groupValues[1].trim()
+        for (keyword in keywords) {
+            val index = goal.indexOf(keyword)
+            if (index >= 0) {
+                val afterKeyword = goal.substring(index + keyword.length).trim()
+                val cleaned = afterKeyword.takeWhile { it != '\n' && it.code > 32 }.take(50)
+                if (cleaned.isNotEmpty()) {
+                    return cleaned
+                }
             }
         }
         return ""
     }
     
     private fun extractMessageContent(goal: String): String? {
-        val patterns = listOf(
-            Regex("说[：:](.+)"),
-            Regex("内容[：:](.+)"),
-            Regex("[\"'""]([^\"'""\n]+)[\"'""]")
-        )
-        
-        for (pattern in patterns) {
-            val match = pattern.find(goal)
-            if (match != null) {
-                return match.groupValues[1].trim()
+        // 先检查冒号分隔的模式
+        val colonKeywords = listOf("说：", "说:", "内容：", "内容:")
+        for (keyword in colonKeywords) {
+            val index = goal.indexOf(keyword)
+            if (index >= 0) {
+                val content = goal.substring(index + keyword.length).trim()
+                if (content.isNotEmpty()) {
+                    return content.take(200)
+                }
             }
         }
+        
+        // 尝试提取引号内的内容
+        for (quoteStart in listOf('"', '\'')) {
+            val startIdx = goal.indexOf(quoteStart)
+            if (startIdx >= 0 && startIdx < goal.length - 1) {
+                val remaining = goal.substring(startIdx + 1)
+                val endIdx = remaining.indexOf(quoteStart)
+                if (endIdx > 0) {
+                    return remaining.substring(0, endIdx).trim()
+                }
+            }
+        }
+        
         return null
     }
     
@@ -644,3 +656,5 @@ class TaskPlanner(
         currentExecutionState = null
     }
 }
+
+
