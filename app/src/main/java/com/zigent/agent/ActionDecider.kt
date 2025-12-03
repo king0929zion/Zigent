@@ -302,9 +302,11 @@ class ActionDecider(
         
         // 任务规划（若已有）
         if (!planSteps.isNullOrEmpty()) {
-            sb.appendLine("## 任务规划（请按顺序执行，不要遗忘）")
+            sb.appendLine("## 任务规划")
+            sb.appendLine("请按以下步骤顺序执行，不要遗漏任何步骤：")
             planSteps.forEachIndexed { index, step ->
-                sb.appendLine("${index + 1}. $step")
+                val status = if (index < history.size) "✓" else "○"
+                sb.appendLine("$status ${index + 1}. $step")
             }
             sb.appendLine()
         }
@@ -312,39 +314,74 @@ class ActionDecider(
         // 屏幕元素列表（主要信息源）
         sb.appendLine("## 屏幕元素")
         if (screenState.uiElements.isNotEmpty()) {
-            screenState.uiElements.take(30).forEach { elem ->
-                val content = elem.text.ifEmpty { elem.description }.take(40)
-                if (content.isNotEmpty() || elem.isClickable || elem.isEditable || elem.isScrollable) {
-                    val icon = when {
-                        elem.isEditable -> "📝"
-                        elem.isClickable -> "🔘"
-                        elem.isScrollable -> "📜"
-                        else -> "📄"
+            // 根据元素类型分组显示
+            val clickables = screenState.uiElements.filter { it.isClickable && !it.isEditable }
+            val editables = screenState.uiElements.filter { it.isEditable }
+            val scrollables = screenState.uiElements.filter { it.isScrollable && !it.isClickable && !it.isEditable }
+            val texts = screenState.uiElements.filter { !it.isClickable && !it.isEditable && !it.isScrollable && it.text.isNotEmpty() }
+            
+            // 输入框（最重要）
+            if (editables.isNotEmpty()) {
+                sb.appendLine("【输入框】需先点击获取焦点，再用 input_text")
+                editables.take(10).forEach { elem ->
+                    val content = elem.text.ifEmpty { elem.description }.take(30)
+                    sb.appendLine("📝 \"$content\" (${elem.bounds.centerX}, ${elem.bounds.centerY})")
+                }
+                sb.appendLine()
+            }
+            
+            // 可点击元素
+            if (clickables.isNotEmpty()) {
+                sb.appendLine("【可点击元素】用 tap 操作")
+                clickables.take(25).forEach { elem ->
+                    val content = elem.text.ifEmpty { elem.description }.take(30)
+                    if (content.isNotEmpty()) {
+                        sb.appendLine("🔘 \"$content\" (${elem.bounds.centerX}, ${elem.bounds.centerY})")
                     }
-                    val coords = "(${elem.bounds.centerX}, ${elem.bounds.centerY})"
-                    sb.appendLine("$icon \"$content\" $coords")
+                }
+                sb.appendLine()
+            }
+            
+            // 可滚动区域
+            if (scrollables.isNotEmpty()) {
+                sb.appendLine("【可滚动区域】找不到元素时用 swipe_up/down")
+                scrollables.take(3).forEach { elem ->
+                    val content = elem.description.ifEmpty { "scrollable" }.take(20)
+                    sb.appendLine("📜 \"$content\"")
+                }
+                sb.appendLine()
+            }
+            
+            // 文本信息（只显示重要的）
+            if (texts.isNotEmpty()) {
+                val importantTexts = texts.filter { it.text.length in 2..50 }.take(10)
+                if (importantTexts.isNotEmpty()) {
+                    sb.appendLine("【文本信息】")
+                    importantTexts.forEach { elem ->
+                        sb.appendLine("📄 \"${elem.text.take(40)}\"")
+                    }
+                    sb.appendLine()
                 }
             }
-            sb.appendLine()
-            sb.appendLine("图例: 🔘可点击 📝可输入 📜可滚动 📄文本")
         } else {
-            sb.appendLine("（未检测到可交互元素）")
+            sb.appendLine("（未检测到可交互元素，可调用 describe_screen 获取视觉信息）")
         }
         sb.appendLine()
         
         // VLM 图片描述（如果有）
         if (!vlmDescription.isNullOrBlank()) {
             sb.appendLine("## 屏幕视觉描述 (VLM)")
-            sb.appendLine(vlmDescription.take(500))
+            sb.appendLine(vlmDescription.take(600))
             sb.appendLine()
         }
         
         // 历史操作
         if (history.isNotEmpty()) {
             sb.appendLine("## 已执行步骤")
-            history.takeLast(5).forEachIndexed { index, step ->
+            history.takeLast(6).forEachIndexed { index, step ->
                 val status = if (step.success) "✓" else "✗"
-                sb.appendLine("${index + 1}. $status ${step.action.description}")
+                val errorInfo = if (!step.success && step.errorMessage != null) " [失败: ${step.errorMessage.take(30)}]" else ""
+                sb.appendLine("${index + 1}. $status ${step.action.description}$errorInfo")
             }
             sb.appendLine()
         }
@@ -352,6 +389,11 @@ class ActionDecider(
         // 指示
         sb.appendLine("## 请求")
         sb.appendLine("根据以上信息，调用合适的工具执行下一步操作。")
+        sb.appendLine()
+        sb.appendLine("注意事项：")
+        sb.appendLine("- 使用屏幕元素列表中的坐标 (x, y)")
+        sb.appendLine("- 输入文字前必须先点击输入框")
+        sb.appendLine("- 目标达成后立即调用 finished")
         
         return sb.toString()
     }
