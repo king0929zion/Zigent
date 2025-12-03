@@ -6,6 +6,9 @@ package com.zigent.utils
  */
 object AppUtils {
 
+    // 近期解析缓存，避免连续步骤反复认为未安装
+    private val resolvedCache = mutableMapOf<String, String>()
+
     /**
      * 常用应用包名映射
      */
@@ -109,30 +112,32 @@ object AppUtils {
             .replace("软件", "")
             .lowercase()
             .trim()
+
+        // 缓存命中
+        resolvedCache[cleanName]?.let { return it }
+        resolvedCache[appName.lowercase()]?.let { return it }
         
-        // 1. 优先从已安装应用中动态查找（最准确）
+        // 1. 优先从已安装应用中动态查找（最准确），必要时强制刷新
         context?.let { ctx ->
-            val installedApps = InstalledAppsHelper.getInstalledUserApps(ctx)
-            
-            // 精确匹配应用名
-            installedApps.find { it.name.lowercase() == cleanName }?.let { 
-                return it.packageName 
+            fun search(installedApps: List<InstalledApp>): String? {
+                installedApps.find { it.name.lowercase() == cleanName }?.let { return it.packageName }
+                installedApps.find { it.name.lowercase().contains(cleanName) || cleanName.contains(it.name.lowercase()) }?.let { return it.packageName }
+                installedApps.find {
+                    val simpleName = it.name.lowercase().replace(" ", "")
+                    simpleName.contains(cleanName) || cleanName.contains(simpleName)
+                }?.let { return it.packageName }
+                return null
             }
-            
-            // 包含匹配
-            installedApps.find { 
-                it.name.lowercase().contains(cleanName) || 
-                cleanName.contains(it.name.lowercase())
-            }?.let { 
-                return it.packageName 
+
+            search(InstalledAppsHelper.getInstalledUserApps(ctx))?.let { pkg ->
+                resolvedCache[cleanName] = pkg
+                resolvedCache[appName.lowercase()] = pkg
+                return pkg
             }
-            
-            // 拼音/英文名匹配（部分匹配）
-            installedApps.find {
-                val simpleName = it.name.lowercase().replace(" ", "")
-                simpleName.contains(cleanName) || cleanName.contains(simpleName)
-            }?.let {
-                return it.packageName
+            search(InstalledAppsHelper.getInstalledUserApps(ctx, forceRefresh = true))?.let { pkg ->
+                resolvedCache[cleanName] = pkg
+                resolvedCache[appName.lowercase()] = pkg
+                return pkg
             }
         }
         
@@ -162,23 +167,43 @@ object AppUtils {
         APP_PACKAGE_MAP[appName]?.let { return it }
         
         // 精确匹配清理后的名称
-        APP_PACKAGE_MAP[cleanName]?.let { return it }
-        APP_PACKAGE_MAP.entries.find { it.key.lowercase() == cleanName }?.let { return it.value }
+        APP_PACKAGE_MAP[cleanName]?.let { 
+            resolvedCache[cleanName] = it
+            resolvedCache[appName.lowercase()] = it
+            return it 
+        }
+        APP_PACKAGE_MAP.entries.find { it.key.lowercase() == cleanName }?.let { 
+            resolvedCache[cleanName] = it.value
+            resolvedCache[appName.lowercase()] = it.value
+            return it.value 
+        }
         
         // 别名对应的映射
         aliasTarget?.let { target ->
-            APP_PACKAGE_MAP[target]?.let { return it }
+            APP_PACKAGE_MAP[target]?.let { 
+                resolvedCache[cleanName] = it
+                resolvedCache[appName.lowercase()] = it
+                return it 
+            }
         }
         
         // 模糊匹配（包含关系）
         APP_PACKAGE_MAP.entries.find { (key, _) ->
             cleanName.contains(key.lowercase()) || key.lowercase().contains(cleanName)
-        }?.let { return it.value }
+        }?.let { 
+            resolvedCache[cleanName] = it.value
+            resolvedCache[appName.lowercase()] = it.value
+            return it.value 
+        }
         
         // 4. 再次尝试已安装应用（使用别名）
         aliasTarget?.let { target ->
             context?.let { ctx ->
-                InstalledAppsHelper.findPackageByName(ctx, target)?.let { return it }
+                InstalledAppsHelper.findPackageByName(ctx, target)?.let { 
+                    resolvedCache[cleanName] = it
+                    resolvedCache[appName.lowercase()] = it
+                    return it 
+                }
             }
         }
         
