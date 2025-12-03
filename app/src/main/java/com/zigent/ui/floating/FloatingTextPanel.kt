@@ -76,7 +76,7 @@ class FloatingTextPanel(context: Context) : View(context) {
         textSize = 15 * density  // 增大：13 -> 15
     }
     
-    private enum class PanelMode {
+    enum class PanelMode {
         INFO, QUESTION, STATUS
     }
     
