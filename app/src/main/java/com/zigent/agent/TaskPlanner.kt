@@ -423,17 +423,22 @@ class TaskPlanner(
             
             stepsArray.forEachIndexed { index, element ->
                 val stepObj = element.asJsonObject
-                steps.add(PlanStep(
-                    index = index,
-                    description = stepObj.get("description")?.asString ?: "步骤 ${index + 1}",
-                    expectedAction = stepObj.get("expected_action")?.asString,
-                    targetElement = stepObj.get("target_element")?.asString,
-                    inputData = stepObj.get("input_data")?.asString,
-                    verification = stepObj.get("verification")?.asString,
-                    isOptional = stepObj.get("is_optional")?.asBoolean ?: false,
-                    fallback = stepObj.get("fallback")?.asString
-                ))
+                steps.add(
+                    PlanStep(
+                        index = index,
+                        description = stepObj.get("description")?.asString ?: "步骤 ${index + 1}",
+                        expectedAction = stepObj.get("expected_action")?.asString,
+                        targetElement = stepObj.get("target_element")?.asString,
+                        inputData = stepObj.get("input_data")?.asString,
+                        verification = stepObj.get("verification")?.asString,
+                        isOptional = stepObj.get("is_optional")?.asBoolean ?: false,
+                        fallback = stepObj.get("fallback")?.asString
+                    )
+                )
             }
+
+            // 补充收尾自检，避免遗漏最终确认
+            val normalizedSteps = ensureCompletionStep(steps, originalGoal)
             
             val complexityStr = json.get("complexity")?.asString ?: "MODERATE"
             val complexity = try {
@@ -446,9 +451,9 @@ class TaskPlanner(
                 taskId = java.util.UUID.randomUUID().toString(),
                 originalGoal = originalGoal,
                 refinedGoal = json.get("refined_goal")?.asString ?: originalGoal,
-                steps = steps,
+                steps = normalizedSteps,
                 targetApp = json.get("target_app")?.asString,
-                estimatedDuration = json.get("estimated_duration")?.asInt ?: (steps.size * 5),
+                estimatedDuration = json.get("estimated_duration")?.asInt ?: (normalizedSteps.size * 5),
                 complexity = complexity,
                 preconditions = json.getAsJsonArray("preconditions")?.map { it.asString } ?: emptyList(),
                 risks = json.getAsJsonArray("risks")?.map { it.asString } ?: emptyList(),
@@ -559,33 +564,51 @@ class TaskPlanner(
             }
         }
         
-        // 添加完成步骤
-        steps.add(PlanStep(
-            index = steps.size,
-            description = "确认任务完成",
-            expectedAction = "finished",
-            targetElement = null,
-            inputData = null,
-            verification = "任务目标已达成"
-        ))
+        val normalizedSteps = ensureCompletionStep(steps, goal)
         
         return TaskPlan(
             taskId = java.util.UUID.randomUUID().toString(),
             originalGoal = goal,
             refinedGoal = goal,
-            steps = steps,
+            steps = normalizedSteps,
             targetApp = targetApp,
-            estimatedDuration = steps.size * 5,
+            estimatedDuration = normalizedSteps.size * 5,
             complexity = when {
-                steps.size <= 1 -> PlanComplexity.TRIVIAL
-                steps.size <= 3 -> PlanComplexity.SIMPLE
-                steps.size <= 6 -> PlanComplexity.MODERATE
+                normalizedSteps.size <= 1 -> PlanComplexity.TRIVIAL
+                normalizedSteps.size <= 3 -> PlanComplexity.SIMPLE
+                normalizedSteps.size <= 6 -> PlanComplexity.MODERATE
                 else -> PlanComplexity.COMPLEX
             },
             preconditions = emptyList(),
             risks = emptyList(),
             requiresConfirmation = goal.contains("支付") || goal.contains("转账")
         )
+    }
+
+    /**
+     * 补充收尾自检，防止漏掉最终确认
+     */
+    private fun ensureCompletionStep(steps: MutableList<PlanStep>, goal: String): List<PlanStep> {
+        if (steps.isNotEmpty()) {
+            val last = steps.last()
+            val hasCheck = (last.verification ?: last.description).contains("完成") ||
+                    (last.verification ?: "").contains("成功") ||
+                    last.description.contains("确认")
+            if (hasCheck) return steps.mapIndexed { idx, step -> step.copy(index = idx) }
+        }
+        steps.add(
+            PlanStep(
+                index = steps.size,
+                description = "自检并确认任务已完成: $goal",
+                expectedAction = "verify",
+                targetElement = null,
+                inputData = null,
+                verification = "关键结果已呈现/任务目标达成",
+                isOptional = false,
+                fallback = "如未完成，回到上一步重试或提示用户协助"
+            )
+        )
+        return steps.mapIndexed { idx, step -> step.copy(index = idx) }
     }
     
     private fun detectTargetApp(goal: String): String? {

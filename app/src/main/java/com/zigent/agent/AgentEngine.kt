@@ -567,6 +567,12 @@ class AgentEngine @Inject constructor(
             // 3. 检查特殊操作类型
             when (decision.action.type) {
                 ActionType.FINISHED -> {
+                    // 防止规划未完成时提前结束
+                    if (planExecutionState?.isComplete == false) {
+                        Logger.w("Plan not finished yet, ignoring premature FINISHED", TAG)
+                        callback?.onProgress("规划未完成，继续执行剩余步骤")
+                        continue
+                    }
                     handleTaskCompletion(decision.action.resultMessage ?: "任务完成")
                     return
                 }
