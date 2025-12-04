@@ -287,8 +287,10 @@ fun SettingsScreen(
                             )
                         }
                     }
+                }
+            }
 
-                    Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(16.dp))
             
             // Agent API Key（如果选择硅基流动，可以复用上面的 API Key）
             Card(
