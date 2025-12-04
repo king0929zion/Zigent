@@ -62,18 +62,18 @@ class FloatingTextPanel(context: Context) : View(context) {
     
     private val titlePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
         color = ContextCompat.getColor(context, R.color.panel_title)
-        textSize = 17 * density  // 增大：14 -> 17
+        textSize = 19 * density  // 调大标题字号
         isFakeBoldText = true
     }
     
     private val textPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
         color = ContextCompat.getColor(context, R.color.panel_text)
-        textSize = 18 * density  // 增大：16 -> 18
+        textSize = 20 * density  // 调大内容字号
     }
     
     private val hintPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
         color = ContextCompat.getColor(context, R.color.panel_hint)
-        textSize = 15 * density  // 增大：13 -> 15
+        textSize = 16 * density  // 调大提示字号
     }
     
     // AI 推理过程文字画笔（小字体）
